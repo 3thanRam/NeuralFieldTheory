@@ -12,11 +12,11 @@ FILEPATH = os.path.dirname(os.path.realpath(__file__))
 
 class myconfig:
     def __init__(self,mode="train",max_seq_len=60,batch_size=16,num_epochs=10,
-                 max_order=2,embed_dim=128,num_configs=8,mlp_ratio=4,
+                 max_order=5,embed_dim=128,num_configs=8,mlp_ratio=4,
                  validation_split_ratio=0.005,lr=5e-4,lr_patience=2,lr_factor=0.5,
-                 start_epoch=0,load=False, num_model_blocks=1,
+                 start_epoch=0,load=False, num_model_blocks=1,history_len=10**4,
                  # Hyperparameters for CompositeCriterion
-                 lambda_H_logits=5e-1, lambda_C_hidden=1e-2, lambda_O_mfi=1e-2):
+                 lambda_H_logits=1337.717, lambda_C_hidden=2219.622, lambda_O_mfi=1481.369):
 
         self.load=load
         self.ckpt=os.path.join(FILEPATH, "model_data","checkpoint.pth.tar")
@@ -42,6 +42,7 @@ class myconfig:
         self.lr=lr
         self.lr_patience=lr_patience
         self.lr_factor=lr_factor
+        self.history_len=history_len
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Composite Criterion lambdas

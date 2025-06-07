@@ -56,16 +56,14 @@ def chat(model_obj: nn.Module, config_obj: myconfig):
                 max_new_tokens=100,
                 temperature=0.8,
                 top_k=40,
-                repetition_penalty=1.2,
                 device=config_obj.device
             )
             
             # Extract only the new response
-            new_response = response[len(full_prompt):].split('You:')[0].strip()
-            clean_response = clean_response(new_response)
+            new_response =  clean_response(response[len(full_prompt):].split('You:')[0].strip())
             
-            print(f"Bot: {clean_response}")
-            history.extend([f"You: {user_input}", f"Bot: {clean_response}"])
+            print(f"Bot: {new_response}")
+            history.extend([f"You: {user_input}", f"Bot: {new_response}"])
             
         except KeyboardInterrupt:
             print("\nExiting chat...")

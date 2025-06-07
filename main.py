@@ -4,7 +4,7 @@ from cli import test_model, chat # Added chat import if you intend to use it
 from config import myconfig
 
 def main():
-    system = myconfig(load=True, mode="test")
+    system = myconfig(load=True, mode="chat")
     
     if system.mode == "train":
         train_texts, val_texts = get_training_texts(system)
