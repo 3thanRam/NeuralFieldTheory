@@ -3,14 +3,16 @@ import os
 import random 
 import torch
 import torch.optim as optim 
+import torch.nn as nn
+
 from tqdm.auto import tqdm
 from tqdm._utils import _term_move_up
 car_return=_term_move_up() + '\r'
 from torch.utils.data import Dataset, DataLoader
 from config import myconfig
-# from lossfunction import CompositeCriterion # Not needed here, it's in config
+from lossfunction import CompositeCriterion
 
-# ... (get_training_texts and TextDataset remain the same) ...
+
 def get_training_texts(config:myconfig):
     corpus_content = config.corpus_content
     if not corpus_content and config.mode == "train" and not config.load: 
@@ -118,10 +120,10 @@ def epoch_loop(config:myconfig, epoch_idx: int) -> bool:
             num_workers=max(0, num_workers // 2), pin_memory=pin_memory_flag 
         )
 
-    model=config.model
-    optimizer = config.optimizer
-    scheduler = config.scheduler
-    criterion = config.criterion # This is now CompositeCriterion
+    model: nn.Module=config.model
+    optimizer: optim.Optimizer  = config.optimizer
+    scheduler: optim.lr_scheduler._LRScheduler = config.scheduler
+    criterion: CompositeCriterion = config.criterion # This is now CompositeCriterion
     
     epoch_total_loss_sum = 0.0
     # Store sums for individual loss components if you want to average them over epoch
@@ -168,14 +170,13 @@ def epoch_loop(config:myconfig, epoch_idx: int) -> bool:
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
-            epoch_total_loss_sum += loss.item() # This is loss_logs["total"]
+            epoch_total_loss_sum += loss.item() # loss_logs["total"]
             epoch_nll_loss_sum += loss_logs["nll"]
             epoch_h_loss_sum += loss_logs["H_logits"]
             epoch_decor_loss_sum += loss_logs["decor_hidden"]
             epoch_gateh_loss_sum += loss_logs["gateH_mfi"]
             processed_batches_train += 1
 
-            # Update tqdm postfix with detailed losses
             batch_iterator.set_postfix(
                 total=f"{loss.item():.3f}", 
                 nll=f"{loss_logs['nll']:.3f}",
@@ -183,11 +184,7 @@ def epoch_loop(config:myconfig, epoch_idx: int) -> bool:
                 decor=f"{loss_logs['decor_hidden']:.3f}",
                 gateH=f"{loss_logs['gateH_mfi']:.3f}"
             )
-            # Optional: More frequent detailed logging to console (can be verbose)
-            # if (batch_idx + 1) % 50 == 0: # Log every 50 batches
-            #     log_str = f"[E{epoch_idx+1} B{batch_idx+1}] "
-            #     log_str += " ".join([f"{k}:{v:.3f}" for k,v in loss_logs.items()])
-            #     batch_iterator.write(car_return + log_str)
+
     except KeyboardInterrupt: 
         print("\nTraining stopped early by user (KeyboardInterrupt in batch_iterator loop).")
         stop_training_flag = True 
@@ -202,7 +199,6 @@ def epoch_loop(config:myconfig, epoch_idx: int) -> bool:
 
     avg_train_total_loss = epoch_total_loss_sum / processed_batches_train
     avg_train_nll_loss = epoch_nll_loss_sum / processed_batches_train
-    # ... average other components similarly if needed for epoch summary
     lr_str = f"LR: {optimizer.param_groups[0]['lr']:.2e}"
     print(f"Epoch {epoch_idx+1} Train Avg Total Loss: {avg_train_total_loss:.4f} (NLL: {avg_train_nll_loss:.4f}) | {lr_str}")
 
@@ -278,7 +274,6 @@ def epoch_loop(config:myconfig, epoch_idx: int) -> bool:
     return stop_training_flag 
 
 def train_model(config:myconfig):
-    # ... (train_model loop structure remains the same)
     if not config.raw_training_texts and not config.load :
          print("No training texts available and not loading a model. Aborting training.")
          return

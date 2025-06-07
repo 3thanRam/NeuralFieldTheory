@@ -50,50 +50,24 @@ def decorrelation_regularizer(hidden: torch.Tensor, mask: Optional[torch.Tensor]
     
     return off_diag_corr_sq / num_off_diag_elements
 
-# ADAPTED for config_probs from PartitionFunctionMFI
 def gate_entropy_regularizer(
-    gates_list: List[Optional[torch.Tensor]], 
+    gates_list: List[torch.Tensor],  # Remove Optional
     padding_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-    # gates_list contains tensors of shape (B, T, num_configs) from MFI diagnostics['config_probs']
-    # padding_mask is (B, T)
+) -> torch.Tensor:
+    total_entropy = 0.0
+    num_blocks = len(gates_list)
     
-    if not gates_list:
-        return torch.tensor(0.0, device='cpu') # Default device if list is empty
-
-    total_avg_block_entropy = 0.0
-    num_valid_blocks = 0
-    device = None
-
-    for config_probs_tensor in gates_list: # Each is (B, T, num_configs)
-        if config_probs_tensor is None:
-            continue
-        if device is None: # Get device from the first valid tensor
-            device = config_probs_tensor.device
-
-        # config_probs_tensor are the probabilities p_i for each configuration
-        # Entropy H(P) = - sum(p_i * log(p_i))
-        entropy_per_token = -(config_probs_tensor * torch.log(config_probs_tensor.clamp_min(1e-10))).sum(dim=-1) # (B, T)
-
+    for config_probs_tensor in gates_list:
+        # Compute entropy directly (no None check needed)
+        entropy_per_token = -(config_probs_tensor * torch.log(config_probs_tensor.clamp_min(1e-10))).sum(dim=-1)
+        
         if padding_mask is not None:
-            # Ensure padding_mask is on the same device and is float
-            current_padding_mask = padding_mask.to(device=entropy_per_token.device, dtype=torch.float)
-            masked_token_entropy = entropy_per_token * current_padding_mask
-            
-            # Normalize by the number of unpadded tokens in the batch
-            num_valid_tokens = current_padding_mask.sum().clamp_min(1.0)
-            avg_entropy_for_block = masked_token_entropy.sum() / num_valid_tokens
+            valid_tokens = padding_mask.sum()
+            total_entropy += (entropy_per_token * padding_mask).sum() / valid_tokens
         else:
-            # If no mask, average over all B*T tokens
-            avg_entropy_for_block = entropy_per_token.mean() 
-            
-        total_avg_block_entropy += avg_entropy_for_block
-        num_valid_blocks += 1
+            total_entropy += entropy_per_token.mean()
     
-    if num_valid_blocks == 0:
-        return torch.tensor(0.0, device=device if device else 'cpu')
-
-    return total_avg_block_entropy / num_valid_blocks
+    return total_entropy / num_blocks
 
 
 class CompositeCriterion:

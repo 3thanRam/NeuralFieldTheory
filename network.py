@@ -84,8 +84,7 @@ class PartitionFunctionMFI(nn.Module):
         energies = torch.stack(energies, dim=2)
         return energies, outputs
     
-    def _compute_partition_function(self, energies: torch.Tensor, mask: Optional[torch.Tensor]):
-        beta = torch.exp(self.log_beta)
+    def _compute_partition_function(self, energies: torch.Tensor, mask: Optional[torch.Tensor],beta):
         prior_bias = self.config_prior.view(1, 1, -1)
         biased_energies = energies + prior_bias
         boltzmann_weights = torch.exp(-beta * biased_energies)
@@ -112,16 +111,20 @@ class PartitionFunctionMFI(nn.Module):
         interaction = torch.cat([x, z], dim=-1)
         energies, outputs = self._compute_configuration_energies(interaction)
         
-        original_beta_data = None 
         if temperature_override is not None:
-            original_beta_data = self.log_beta.data.clone() 
-            with torch.no_grad(): 
-                 self.log_beta.data.fill_(torch.log(torch.tensor(1.0 / temperature_override, device=self.log_beta.device)))
+            beta = torch.tensor(1.0 / temperature_override, device=self.log_beta.device)
+        else:
+            beta = torch.exp(self.log_beta)
+        #original_beta_data = None 
+        #if temperature_override is not None:
+        #    original_beta_data = self.log_beta.data.clone() 
+        #    with torch.no_grad(): 
+        #         self.log_beta.data.fill_(torch.log(torch.tensor(1.0 / temperature_override, device=self.log_beta.device)))
         
-        log_Z, config_probs = self._compute_partition_function(energies, mask)
+        log_Z, config_probs = self._compute_partition_function(energies, mask,beta)
         
-        if original_beta_data is not None:
-            self.log_beta.data = original_beta_data 
+        #if original_beta_data is not None:
+        #    self.log_beta.data = original_beta_data 
             
         if sampling_mode == "expectation":
             out = (config_probs.unsqueeze(-1) * outputs).sum(dim=2)
@@ -157,7 +160,7 @@ class PartitionFunctionMFI(nn.Module):
                 'log_Z': log_Z,
                 'config_probs': config_probs, # This is what we need for gate_entropy_regularizer
                 'energies': energies,
-                'temperature': 1.0 / torch.exp(self.log_beta).item(), # Use .item() for scalar
+                'temperature': 1.0 / beta.item(), # Use .item() for scalar
                 'entropy': -(config_probs * torch.log(config_probs.clamp_min(1e-10))).sum(dim=-1)
             }
             return out, diagnostics
@@ -273,10 +276,7 @@ class OverallLanguageModel(nn.Module):
             )
             if return_for_criterion:
                 current_x, block_mfi_diagnostics = block_output
-                if block_mfi_diagnostics and 'config_probs' in block_mfi_diagnostics:
-                    collected_config_probs.append(block_mfi_diagnostics['config_probs'])
-                else: # Should not happen if MFI returns diagnostics correctly
-                    collected_config_probs.append(None) 
+                collected_config_probs.append(block_mfi_diagnostics['config_probs'])
             else:
                 current_x = block_output
         

@@ -1,5 +1,6 @@
 #cli.py
 import re
+import torch.nn as nn
 import torch # Added for torch.no_grad() if generate method doesn't handle it
 from config import myconfig # Import the config class for type hinting
 
@@ -28,7 +29,6 @@ def test_model(model_obj: torch.nn.Module, config_obj: myconfig, test_prompts:li
         print(f"Prompt: '{prompt_txt}' -> Generated: '{repr(generated_txt)}'\n")
 
 def clean_response(s:str):
-    # ... (keep existing clean_response function)
     s = re.sub(r' {2,}', ' ', s)
     s = re.sub(r' +\n +', '\n', s) 
     s = "\n".join([line.strip() for line in s.split('\n')])
@@ -37,31 +37,36 @@ def clean_response(s:str):
 
 
 # def chat(model,config:dict): # Old signature
-def chat(model_obj: torch.nn.Module, config_obj: myconfig): # New signature
-    print("\n--- Chatting with the Model (type '\\bye' to exit) ---")
-    # Similar to test_model, MFI specific generation params can be added if needed.
-
-    # full_history_for_prompt = "" # Not used in current simple chat
-
+def chat(model_obj: nn.Module, config_obj: myconfig):
+    print("\n--- Chat Mode (type '/exit' to quit) ---")
+    history = []
+    
     while True:
-        prompt_txt = input(f"User: ")
-        if "\\bye" == prompt_txt.lower():
+        try:
+            user_input = input("You: ").strip()
+            if user_input.lower() in ['/exit', '/quit']:
+                break
+                
+            # Add conversation history
+            full_prompt = "\n".join(history[-config_obj.history_len*2:] + [f"You: {user_input}", "Bot:"])
+            
+            response = model_obj.generate(
+                tokenizer=config_obj.tokenizer,
+                start_text=full_prompt,
+                max_new_tokens=100,
+                temperature=0.8,
+                top_k=40,
+                repetition_penalty=1.2,
+                device=config_obj.device
+            )
+            
+            # Extract only the new response
+            new_response = response[len(full_prompt):].split('You:')[0].strip()
+            clean_response = clean_response(new_response)
+            
+            print(f"Bot: {clean_response}")
+            history.extend([f"You: {user_input}", f"Bot: {clean_response}"])
+            
+        except KeyboardInterrupt:
+            print("\nExiting chat...")
             break
-        if not prompt_txt.strip():
-            continue
-
-        current_prompt = prompt_txt # Simple, no history yet
-
-        response_raw = model_obj.generate(
-            tokenizer=config_obj.tokenizer,
-            start_text=current_prompt,
-            max_new_tokens=50,
-            temperature=0.75,
-            top_k=10,
-            device=config_obj.device
-        )
-        response_clean = clean_response(response_raw)
-        
-        print(f"Bot: {response_clean}")
-        
-    print("Bot: Bye!")

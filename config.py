@@ -3,9 +3,8 @@ import os
 from transformers import GPT2TokenizerFast
 import torch 
 import torch.optim as optim
-# import torch.nn as nn # nn.CrossEntropyLoss not used directly if CompositeCriterion is default
-from lossfunction import CompositeCriterion # Import your custom criterion
 
+from lossfunction import CompositeCriterion
 from datasets import load_dataset
 from network import OverallLanguageModel 
 
@@ -14,10 +13,10 @@ FILEPATH = os.path.dirname(os.path.realpath(__file__))
 class myconfig:
     def __init__(self,mode="train",max_seq_len=60,batch_size=16,num_epochs=10,
                  max_order=2,embed_dim=128,num_configs=8,mlp_ratio=4,
-                 validation_split_ratio=0.02,lr=5e-4,lr_patience=2,lr_factor=0.5,
+                 validation_split_ratio=0.005,lr=5e-4,lr_patience=2,lr_factor=0.5,
                  start_epoch=0,load=False, num_model_blocks=1,
                  # Hyperparameters for CompositeCriterion
-                 lambda_H_logits=0.01, lambda_C_hidden=0.1, lambda_O_mfi=0.001):
+                 lambda_H_logits=5e-1, lambda_C_hidden=1e-2, lambda_O_mfi=1e-2):
 
         self.load=load
         self.ckpt=os.path.join(FILEPATH, "model_data","checkpoint.pth.tar")
