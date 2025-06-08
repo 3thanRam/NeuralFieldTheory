@@ -244,43 +244,47 @@ class OverallLanguageModel(nn.Module):
         self.final_norm.reset_parameters()
         self.to_logits.reset_parameters()
 
-    def forward(self, input_ids: torch.Tensor, 
-                mask: Optional[torch.Tensor] = None, 
-                # Renamed for clarity: `return_for_criterion` implies specific needs for CompositeCriterion
-                return_for_criterion: bool = False, 
+    def forward(self, input_ids: torch.Tensor,
+                mask: Optional[torch.Tensor] = None,
+                return_for_criterion: bool = False,
                 temperature_override: Optional[float] = None,
                 sampling_mode: str = "expectation"):
 
         x_emb = self.token_embedding(input_ids)
-        
-        collected_config_probs = [] # To collect 'config_probs' from each block
+
+        collected_config_probs = []
+        collected_mfi_energies = [] # NEW: To collect 'energies' from each block
 
         current_x = x_emb
         for block in self.blocks:
-            # We need diagnostics from MFI if return_for_criterion is True
             block_output = block(
                 current_x,
                 mask=mask,
                 temperature_override=temperature_override,
                 sampling_mode=sampling_mode,
-                return_diagnostics=return_for_criterion # Pass flag down
+                return_diagnostics=return_for_criterion
             )
             if return_for_criterion:
                 current_x, block_mfi_diagnostics = block_output
-                collected_config_probs.append(block_mfi_diagnostics['config_probs'])
+                if block_mfi_diagnostics: # block_mfi_diagnostics might be None if MFI is bypassed
+                    collected_config_probs.append(block_mfi_diagnostics.get('config_probs'))
+                    collected_mfi_energies.append(block_mfi_diagnostics.get('energies')) # NEW
+                else: # Should not happen if return_diagnostics=True and MFI is active
+                    collected_config_probs.append(None)
+                    collected_mfi_energies.append(None)
+
             else:
                 current_x = block_output
-        
-        processed_emb = self.final_norm(current_x) # This is 'hidden' for CompositeCriterion
+
+        processed_emb = self.final_norm(current_x)
         logits = self.to_logits(processed_emb)
 
         if return_for_criterion:
-            # Return logits, final processed_emb (as hidden), and list of config_probs
-            return logits, processed_emb, collected_config_probs
+            # Return logits, final processed_emb, list of config_probs, AND list of energies
+            return logits, processed_emb, collected_config_probs, collected_mfi_energies 
         else:
-            return logits # Default: just return logits
+            return logits
 
-    # ... (generate method remains the same, it calls forward with return_for_criterion=False by default) ...
     @torch.no_grad()
     def generate(self, tokenizer, start_text: str, max_new_tokens: int,
                  temperature: float = 1.0, top_k: Optional[int] = None,

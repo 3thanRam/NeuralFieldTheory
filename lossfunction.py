@@ -70,42 +70,87 @@ def gate_entropy_regularizer(
     return total_entropy / num_blocks
 
 
+def mfi_energy_regularizer(
+    mfi_energies_list: List[Optional[torch.Tensor]], # List of (B, T, NumConfigs)
+    padding_mask: Optional[torch.Tensor] = None
+) -> torch.Tensor:
+    total_energy_reg = 0.0
+    active_blocks = 0
+    if not mfi_energies_list:
+        return torch.tensor(0.0)
+
+    device = None
+    for energies_tensor in mfi_energies_list:
+        if energies_tensor is not None:
+            if device is None: device = energies_tensor.device
+            # energies_tensor shape: (B, T, NumConfigs)
+            if padding_mask is not None:
+                # Mask energies before calculating var and mean
+                # We want to consider energies only at valid token positions
+                mask_expanded = padding_mask.unsqueeze(-1).float() # (B, T, 1)
+                valid_energies = energies_tensor * mask_expanded
+                num_valid_elements = padding_mask.sum() * energies_tensor.size(-1)
+                if num_valid_elements > 0:
+                    # Flatten for var/mean over valid parts
+                    flat_valid_energies = valid_energies[padding_mask.unsqueeze(-1).expand_as(energies_tensor)].view(-1)
+                    var_e = flat_valid_energies.var(unbiased=False) if flat_valid_energies.numel() > 1 else torch.tensor(0.0, device=device)
+                    mean_abs_e = flat_valid_energies.abs().mean()
+                else:
+                    var_e = torch.tensor(0.0, device=device)
+                    mean_abs_e = torch.tensor(0.0, device=device)
+            else:
+                var_e = energies_tensor.var()
+                mean_abs_e = energies_tensor.abs().mean()
+
+            total_energy_reg += (var_e + mean_abs_e)
+            active_blocks += 1
+
+    if active_blocks == 0:
+        return torch.tensor(0.0, device=device if device else 'cpu') # Ensure tensor on correct device
+    return total_energy_reg / active_blocks
+
+
 class CompositeCriterion:
-    def __init__(self, λ_H: float = 0.01, λ_C: float = 0.1, λ_O: float = 0.001, pad_idx: int = -100):
+    def __init__(self, λ_H: float = 0.01, λ_C: float = 0.1, λ_O: float = 0.001,
+                 λ_E_mfi: float = 0.001, # NEW Lambda
+                 pad_idx: int = -100):
         self.λ_H, self.λ_C, self.λ_O = λ_H, λ_C, λ_O
+        self.λ_E_mfi = λ_E_mfi # NEW
         self.pad_idx = pad_idx
 
-    def __call__(self, 
-                 logits: torch.Tensor, 
-                 targets: torch.Tensor, 
-                 hidden: torch.Tensor, # Final hidden states for decorrelation
-                 gates_list: List[Optional[torch.Tensor]], # List of config_probs from MFI blocks
-                 padding_mask: Optional[torch.Tensor] = None # (B,T) boolean, True for valid tokens
+    def __call__(self,
+                 logits: torch.Tensor,
+                 targets: torch.Tensor,
+                 hidden: torch.Tensor,
+                 gates_list: List[Optional[torch.Tensor]],
+                 mfi_energies_list: List[Optional[torch.Tensor]], # NEW: energies from MFI blocks
+                 padding_mask: Optional[torch.Tensor] = None
                  ) -> tuple[torch.Tensor, Dict[str, float]]:
-        
+
         loss_nll = nll_loss(logits, targets, pad_idx=self.pad_idx)
-        
-        # Regularizers use padding_mask to consider only valid tokens
-        # Ensure padding_mask is boolean for logical ops, float for multiplication
-        # The regularizer functions themselves handle casting mask to float if needed.
         bool_padding_mask = padding_mask.bool() if padding_mask is not None else None
 
         loss_H = entropy_regularizer(logits, mask=bool_padding_mask)
         loss_C = decorrelation_regularizer(hidden, mask=bool_padding_mask)
-        
-        # Pass padding_mask to gate_entropy_regularizer for token-wise gate entropy
-        loss_O = gate_entropy_regularizer(gates_list, padding_mask=bool_padding_mask) 
+        loss_O = gate_entropy_regularizer(gates_list, padding_mask=bool_padding_mask)
+
+        # NEW MFI Energy Regularization
+        loss_E_mfi = torch.tensor(0.0, device=logits.device)
+        if self.λ_E_mfi > 0:
+            loss_E_mfi = mfi_energy_regularizer(mfi_energies_list, padding_mask=bool_padding_mask)
 
         loss_tot = (loss_nll +
                     self.λ_H * loss_H +
                     self.λ_C * loss_C +
-                    self.λ_O * loss_O)
-        
+                    self.λ_O * loss_O +
+                    self.λ_E_mfi * loss_E_mfi) 
+
         logs = {
-            "nll":   loss_nll.item(), # .item() directly as these are scalar losses
+            "nll":   loss_nll.item(),
             "H_logits": loss_H.item(),
             "decor_hidden": loss_C.item(),
             "gateH_mfi": loss_O.item(),
-            "total": loss_tot.item() # Also log total loss for convenience
+            "E_mfi": loss_E_mfi.item(), 
+            "total": loss_tot.item()
         }
         return loss_tot, logs

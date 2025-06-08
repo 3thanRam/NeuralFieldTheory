@@ -11,12 +11,20 @@ from network import OverallLanguageModel
 FILEPATH = os.path.dirname(os.path.realpath(__file__))
 
 class myconfig:
-    def __init__(self,mode="train",max_seq_len=60,batch_size=16,num_epochs=10,
-                 max_order=5,embed_dim=64,num_configs=8,mlp_ratio=4,
+    def __init__(self,mode="train",max_seq_len=80,batch_size=8,num_epochs=10,
+                 max_order=5,embed_dim=64,num_configs=4,mlp_ratio=4,
                  validation_split_ratio=0.005,lr=5e-4,lr_patience=2,lr_factor=0.5,
                  start_epoch=0,load=False, num_model_blocks=1,history_len=10**4,
                  # Hyperparameters for CompositeCriterion
-                 lambda_H_logits=1e-1, lambda_C_hidden=1e-1, lambda_O_mfi=1e-1):
+                 lambda_H_logits=1e-1, lambda_C_hidden=1e-1, lambda_O_mfi=1e-1,
+                 mfi_temperature_schedule_active: bool = True, # Turn on/off
+                 mfi_initial_temperature: float = 2.0,
+                 mfi_final_temperature: float = 0.5, # Don't go too low (e.g. 0.1) initially
+                 mfi_temperature_decay_epochs: int = 0, # If 0, decay over all num_epochs
+                 mfi_energy_reg_lambda: float = 0.001,  # Strength for MFI energy regularization
+                 mfi_sampling_schedule_active: bool = False, # Turn on/off
+                 mfi_sample_mode_until_epoch: int = 0 # Epoch until which 'sample' mode is used, then 'expectation'
+                 ):
 
         self.load=load
         self.ckpt=os.path.join(FILEPATH, "model_data","checkpoint.pth.tar")
@@ -50,6 +58,13 @@ class myconfig:
         self.lambda_C_hidden = lambda_C_hidden
         self.lambda_O_mfi = lambda_O_mfi
 
+        self.mfi_temperature_schedule_active = mfi_temperature_schedule_active
+        self.mfi_initial_temperature = mfi_initial_temperature
+        self.mfi_final_temperature = mfi_final_temperature
+        self.mfi_temperature_decay_epochs = mfi_temperature_decay_epochs if mfi_temperature_decay_epochs > 0 else num_epochs
+        self.mfi_energy_reg_lambda = mfi_energy_reg_lambda
+        self.mfi_sampling_schedule_active = mfi_sampling_schedule_active
+        self.mfi_sample_mode_until_epoch = mfi_sample_mode_until_epoch
         self.corpus_content=""
         
         if load:
@@ -110,6 +125,7 @@ class myconfig:
             λ_H=self.lambda_H_logits,
             λ_C=self.lambda_C_hidden,
             λ_O=self.lambda_O_mfi,
+            λ_E_mfi=self.mfi_energy_reg_lambda, 
             pad_idx=self.pad_idx
         )
         
