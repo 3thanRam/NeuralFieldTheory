@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple, List, Dict # Added Dict
 
-# ... (PartitionFunctionMFI class remains the same) ...
 class PartitionFunctionMFI(nn.Module):
     """Mean-Field Interaction using partition function formulation.
     
@@ -115,17 +114,9 @@ class PartitionFunctionMFI(nn.Module):
             beta = torch.tensor(1.0 / temperature_override, device=self.log_beta.device)
         else:
             beta = torch.exp(self.log_beta)
-        #original_beta_data = None 
-        #if temperature_override is not None:
-        #    original_beta_data = self.log_beta.data.clone() 
-        #    with torch.no_grad(): 
-        #         self.log_beta.data.fill_(torch.log(torch.tensor(1.0 / temperature_override, device=self.log_beta.device)))
         
         log_Z, config_probs = self._compute_partition_function(energies, mask,beta)
         
-        #if original_beta_data is not None:
-        #    self.log_beta.data = original_beta_data 
-            
         if sampling_mode == "expectation":
             out = (config_probs.unsqueeze(-1) * outputs).sum(dim=2)
         elif sampling_mode == "sample":
