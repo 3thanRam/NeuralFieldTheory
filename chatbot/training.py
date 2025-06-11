@@ -123,7 +123,8 @@ def epoch_loop(config:myconfig, epoch_idx: int) -> bool:
 
     model: nn.Module = config.model
     optimizer: optim.Optimizer  = config.optimizer
-    scheduler: optim.lr_scheduler._LRScheduler = config.scheduler
+    #scheduler: optim.lr_scheduler._LRScheduler = config.scheduler
+    scheduler=config.set_scheduler(len(train_dataloader))
     criterion: CompositeCriterion = config.criterion # Assumes CompositeCriterion is updated
 
     # --- MFI Temperature and Sampling Mode Scheduling for Training---

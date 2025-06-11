@@ -154,7 +154,6 @@ def test_config(x_lambdas, system_config: myconfig,
 
 
         if plot_live and completed_batches > 0 and fig is not None:
-            # ... (Plotting logic remains largely the same, ensure y_data_observed is positive for log scale) ...
             x_data_observed = np.arange(1, completed_batches + 1)
             y_data_observed = np.array(batch_losses_for_this_run)
             y_data_plot = np.maximum(y_data_observed, 1e-9) # Ensure positive for log plotting
@@ -190,11 +189,11 @@ def test_config(x_lambdas, system_config: myconfig,
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", category=RuntimeWarning)
                         warnings.simplefilter("ignore", category=scipy.optimize.OptimizeWarning)
-                        params_fit, _ = curve_fit(exp_decay_with_offset, x_data_observed, y_to_fit, p0=p0_fit, bounds=bounds_fit, maxfev=2000)
+                        params_fit, _ = curve_fit(exp_decay_with_offset, x_data_observed, y_to_fit, p0=p0_fit, bounds=bounds_fit)
                     
                     A_f, k_f, C_f_raw = params_fit
                     C_f = C_f_raw - offset_fit # Adjust back
-                    C_f = max(0.0, C_f) # Ensure non-negative
+                    #C_f = max(0.0, C_f) # Ensure non-negative
 
                     x_exp_plot = np.arange(1, int(x_data_observed[-1]) + 1 + exp_extrapolate_steps)
                     y_exp_values = exp_decay_with_offset(x_exp_plot, A_f, k_f, C_f_raw) # Use C_f_raw for plotting the fitted curve
@@ -223,7 +222,7 @@ def test_config(x_lambdas, system_config: myconfig,
         plt.show() # Keep plot window open
 
 
-def test(): # Renamed from 'tuning' in the original testing.py
+def test(max_b_run_in_test_config = 500): # Renamed from 'tuning' in the original testing.py
     system = myconfig(load=False, mode="train") # Ensure mode="train" for train_dataloader
     # Set MFI scheduling parameters in 'system' if you want to test them
     system.mfi_temperature_schedule_active = True
@@ -249,12 +248,12 @@ def test(): # Renamed from 'tuning' in the original testing.py
 
     train_dataset=TextDataset(texts=system.raw_training_texts, tokenizer=system.tokenizer, max_len=system.max_seq_len)
     system.train_dataloader =DataLoader(train_dataset, batch_size=system.batch_size, shuffle=True, num_workers=num_workers, pin_memory=pin_memory_flag)
-
+    system.set_scheduler(len(system.train_dataloader))
     system.model.to(system.device)
     # For testing.py, decide if you want to reset model params for each run of test()
     # system.model.reset_parameters()
 
-    max_b_run_in_test_config = 300
+    
     extrap_steps = max(20, int(0.3 * max_b_run_in_test_config))
 
     # Define the lambdas for this specific test run

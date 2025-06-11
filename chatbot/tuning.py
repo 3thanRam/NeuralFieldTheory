@@ -278,7 +278,7 @@ def test_config_scalar(x,args):
     return avg_loss_for_this_run
 
 
-def tuning(num_points_per_lambda=5, num_bestruns=10, num_tests=250): # Reduced num_tests for faster demo
+def tuning(num_points_per_lambda=5, num_bestruns=10, num_tests=150): # Reduced num_tests for faster demo
     
     # It's good practice for 'tuning' to create its own config for isolation,
     # or ensure the passed 'system' object is correctly configured for tuning.
@@ -329,7 +329,7 @@ def tuning(num_points_per_lambda=5, num_bestruns=10, num_tests=250): # Reduced n
     # Use a persistent DataLoader if num_workers > 0 and many calls to test_config_fit
     # For tuning, shuffle=False might give more stable loss curves for fitting, but True is also fine.
     system.train_dataloader = DataLoader(train_dataset, batch_size=system.batch_size, shuffle=True, num_workers=num_workers, pin_memory=pin_memory_flag)
-
+    system.set_scheduler(len(system.train_dataloader))
     # Define search space for lambdas
     # Example: x = [lambda_H, lambda_C, lambda_O, lambda_E_mfi]
     # initial_guess = [0.1, 0.1, 0.1, 0.001] # Add l_E_mfi if tuning it

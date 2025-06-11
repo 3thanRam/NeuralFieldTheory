@@ -1,6 +1,6 @@
 # config.py
 import os
-from transformers import GPT2TokenizerFast
+from transformers import GPT2TokenizerFast,get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
 import torch 
 import torch.optim as optim
 
@@ -11,8 +11,8 @@ from network import OverallLanguageModel
 FILEPATH = os.path.dirname(os.path.realpath(__file__))
 
 class myconfig:
-    def __init__(self,mode="train",max_seq_len=80,batch_size=8,num_epochs=10,
-                 max_order=5,embed_dim=64,num_configs=4,mlp_ratio=4,
+    def __init__(self,mode="train",max_seq_len=60,batch_size=8,num_epochs=10,
+                 max_order=5,embed_dim=128,num_configs=32,mlp_ratio=6,
                  validation_split_ratio=0.005,lr=5e-4,lr_patience=2,lr_factor=0.5,
                  start_epoch=0,load=False, num_model_blocks=1,history_len=10**4,
                  # Hyperparameters for CompositeCriterion
@@ -23,7 +23,8 @@ class myconfig:
                  mfi_temperature_decay_epochs: int = 0, # If 0, decay over all num_epochs
                  mfi_energy_reg_lambda: float = 0.001,  # Strength for MFI energy regularization
                  mfi_sampling_schedule_active: bool = False, # Turn on/off
-                 mfi_sample_mode_until_epoch: int = 0 # Epoch until which 'sample' mode is used, then 'expectation'
+                 mfi_sample_mode_until_epoch: int = 0, # Epoch until which 'sample' mode is used, then 'expectation'
+                 warmup_steps_ratio=0.1
                  ):
 
         self.load=load
@@ -65,6 +66,7 @@ class myconfig:
         self.mfi_energy_reg_lambda = mfi_energy_reg_lambda
         self.mfi_sampling_schedule_active = mfi_sampling_schedule_active
         self.mfi_sample_mode_until_epoch = mfi_sample_mode_until_epoch
+        self.warmup_steps_ratio=warmup_steps_ratio
         self.corpus_content=""
         
         if load:
@@ -78,9 +80,20 @@ class myconfig:
             tokenizer = base_tokenizer
             tokenizer.save_pretrained(self.tokenizer_dir)
             
-            hf_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", trust_remote_code=True)
-            corpus_texts_list = sorted([ex["text"] for ex in hf_dataset["train"] if ex["text"].strip()])
+            #hf_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", trust_remote_code=True)
+            #corpus_texts_list = sorted([ex["text"] for ex in hf_dataset["train"] if ex["text"].strip()])
+            #self.corpus_content = "\n".join(corpus_texts_list)
+            #with open(self.corpus_filepath, "w", encoding="utf-8") as f:
+            #    f.write(self.corpus_content)
+            print("Loading Penn Treebank dataset...")
+            # Use dataset specific split, e.g. 'train', 'validation', 'test'
+            hf_dataset_ptb = load_dataset("ptb_text_only", "penn_treebank", trust_remote_code=True)
+            # Concatenate train, validation, test for a larger corpus, or just use train
+            corpus_texts_list = []
+            for split in ['train', 'validation', 'test']:
+                 corpus_texts_list.extend([ex["sentence"] for ex in hf_dataset_ptb[split] if ex["sentence"].strip()])
             self.corpus_content = "\n".join(corpus_texts_list)
+            print(f"Loaded Penn Treebank corpus with {len(corpus_texts_list)} sentences.")
             with open(self.corpus_filepath, "w", encoding="utf-8") as f:
                 f.write(self.corpus_content)
 
@@ -103,7 +116,8 @@ class myconfig:
         ).to(self.device)
         
         self.optimizer = optim.AdamW(self.model.parameters(), lr=self.lr)
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, 'min', patience=self.lr_patience, factor=self.lr_factor)
+        self.myscheduler_fct=get_linear_schedule_with_warmup
+        self.scheduler = None#optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, 'min', patience=self.lr_patience, factor=self.lr_factor)
         
         if load:
             if os.path.exists(self.ckpt):
@@ -131,3 +145,19 @@ class myconfig:
         
         self.raw_training_texts = [] 
         self.raw_validation_texts = []
+    def set_scheduler(self,len_trainingdata):
+        #if config.scheduler is None:
+        num_training_steps_total = self.num_epochs * len_trainingdata # train_dataloader defined earlier
+        # If using gradient accumulation:
+        # num_update_steps_per_epoch = len(train_dataloader) // config.gradient_accumulation_steps
+        # num_training_steps_total = config.num_epochs * num_update_steps_per_epoch
+
+        num_warmup_steps = int(self.warmup_steps_ratio * num_training_steps_total)
+
+        self.scheduler = self.myscheduler_fct( # or get_cosine_schedule_with_warmup
+            self.optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps_total
+        )
+        print(f"Initialized LR scheduler with {num_warmup_steps} warmup steps and {num_training_steps_total} total training steps.")
+        return self.scheduler
