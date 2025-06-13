@@ -1,156 +1,146 @@
+# highorderstats.py
 import torch
 from typing import Optional
 
-def skewness(x: torch.Tensor, dim: Optional[int] = None, keepdim: bool = False, unbiased: bool = True, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """
-    Computes the skewness of a tensor.
-    Args:
-        x: Input tensor.
-        dim: The dimension or dimensions to reduce.
-        keepdim: Whether the output tensor has `dim` retained or not.
-        unbiased: If True, use the unbiased estimator for variance in normalization.
-                  For skewness, an unbiased estimator is more complex and often sample skewness is used.
-                  This 'unbiased' flag here primarily affects the std dev calculation.
-        mask: Optional boolean tensor for masked computation. True for valid elements.
-    Returns:
-        Skewness tensor.
-    """
-    if mask is not None:
-        if dim is None: # Global skewness with mask
-            num_valid = mask.float().sum().clamp_min(1.0)
+def _expand_mask(mask: torch.Tensor, target_x_ndim: int) -> torch.Tensor:
+    if mask is None:
+        raise ValueError("_expand_mask called with None mask")
+    ones_to_add = target_x_ndim - mask.ndim
+    if ones_to_add < 0:
+        raise ValueError(f"Mask ndim ({mask.ndim}) is greater than target_x_ndim ({target_x_ndim}).")
+    if ones_to_add == 0:
+        return mask.float()
+    view_shape = mask.shape + (1,) * ones_to_add
+    return mask.view(view_shape).float()
+
+def skewness(x: torch.Tensor, dim: Optional[int] = None, keepdim: bool = False, unbiased: bool = True, mask: Optional[torch.Tensor] = None, min_valid_points_for_skew: int = 3) -> torch.Tensor:
+    if dim is None: 
+        if mask is not None:
+            num_valid = mask.float().sum()
+            if num_valid < min_valid_points_for_skew: return torch.tensor(0.0, device=x.device, dtype=x.dtype)
             x_masked = x[mask]
-            if x_masked.numel() == 0: return torch.tensor(float('nan'), device=x.device, dtype=x.dtype)
-            mean_x = x_masked.mean()
-            std_x = x_masked.std(unbiased=unbiased).clamp_min(1e-9) # Avoid division by zero
-            # For N elements, unbiased skew usually has a (N / ((N-1)*(N-2))) factor,
-            # but here we use the simpler sample skewness based on E[((X-mu)/sigma)^3]
-            skew = ((x_masked - mean_x) / std_x)**3
-            return skew.sum() / num_valid # Average of the cubed standardized scores
-        else: # Dimension-wise skewness with mask
-            if not isinstance(dim, tuple): dim = (dim,)
-            num_valid = mask.float().sum(dim=dim, keepdim=True).clamp_min(1.0)
-            
-            # Mask elements before sum for mean
-            x_times_mask = x * mask.float().unsqueeze(-1) if x.ndim > mask.ndim else x * mask.float()
-            mean_x = x_times_mask.sum(dim=dim, keepdim=True) / num_valid
-            
-            # For std dev with mask: E[X^2] - (E[X])^2
-            mean_x_sq = (x_times_mask**2).sum(dim=dim, keepdim=True) / num_valid
-            var_x = (mean_x_sq - mean_x**2).clamp_min(0) # Ensure non-negative variance
-            if unbiased:
-                # Adjust variance for unbiased estimator (Bessel's correction)
-                # This correction factor is complex for masked, multi-dim reduction
-                # For simplicity with masking, often the biased variance is used or a simplified correction
-                # A common simplification is N / (N-1), but N varies per slice with mask.
-                # Here, we'll use the biased std for simplicity with complex masks,
-                # or you'd need a more involved way to get N for each slice.
-                # correction_factor = num_valid / (num_valid - 1).clamp_min(1.0)
-                # var_x = var_x * correction_factor
-                pass # Sticking to biased for std in complex masked case for this example
-            std_x = torch.sqrt(var_x).clamp_min(1e-9)
-            
-            # Cubed standardized scores, only for valid elements
-            # (x - mean_x) will be non-zero only for original x positions
-            # masking after subtraction and division ensures we sum correctly
-            print(x.shape,mean_x.shape,std_x.shape)
-            standardized_cubed = (((x - mean_x) / std_x)**3)
-            # Apply mask again before summing the cubed terms
-            skew_sum = (standardized_cubed * mask.float().unsqueeze(-1) if x.ndim > mask.ndim else standardized_cubed * mask.float()).sum(dim=dim, keepdim=True)
-            skew = skew_sum / num_valid
-
-            if not keepdim:
-                # Squeeze the specified dimensions
-                for d_idx, d_val in enumerate(sorted(dim, reverse=True)):
-                    skew = skew.squeeze(d_val)
-            return skew
-
-    else: # No mask
-        if dim is None: # Global skewness
-            mean_x = x.mean()
-            std_x = x.std(unbiased=unbiased).clamp_min(1e-9)
-            if std_x == 0: return torch.zeros_like(mean_x) # Or NaN if preferred for zero std
-            skew = torch.mean(((x - mean_x) / std_x)**3)
-            return skew
-        else: # Dimension-wise skewness
-            mean_x = torch.mean(x, dim=dim, keepdim=True)
-            std_x = torch.std(x, dim=dim, keepdim=True, unbiased=unbiased).clamp_min(1e-9)
-            
-            # Create a mask for zero std_dev to avoid NaN and output 0 skew
-            zero_std_mask = (std_x == 0)
-
-            skew = torch.mean(((x - mean_x) / std_x)**3, dim=dim, keepdim=True)
-            skew = torch.where(zero_std_mask, torch.zeros_like(skew), skew) # Handle 0 std_dev
-
-            if not keepdim:
-                # Squeeze the specified dimensions
-                if not isinstance(dim, tuple): dim = (dim,)
-                for d_idx, d_val in enumerate(sorted(dim, reverse=True)):
-                    skew = skew.squeeze(d_val)
-            return skew
+            if x_masked.numel() == 0: return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+            mean_x, std_x = x_masked.mean(), x_masked.std(unbiased=unbiased).clamp_min(1e-9)
+        else: 
+            if x.numel() < min_valid_points_for_skew: return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+            mean_x, std_x = x.mean(), x.std(unbiased=unbiased).clamp_min(1e-9)
+        if std_x == 0: return torch.zeros_like(mean_x)
+        source_tensor = x_masked if mask is not None and x_masked.numel() > 0 else x # Ensure x_masked is not empty before use
+        if source_tensor.numel() == 0 : return torch.tensor(0.0, device=x.device, dtype=x.dtype) # If all masked out
+        return torch.mean(((source_tensor - mean_x) / std_x)**3)
+    else: 
+        dim_tuple = (dim,) if not isinstance(dim, tuple) else dim
         
-def kurtosis(x: torch.Tensor, dim: Optional[int] = None, keepdim: bool = False, unbiased: bool = True, excess: bool = True, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """
-    Computes the kurtosis (or excess kurtosis) of a tensor.
-    Args:
-        x: Input tensor.
-        dim: The dimension or dimensions to reduce.
-        keepdim: Whether the output tensor has `dim` retained or not.
-        unbiased: If True, use unbiased estimator for variance in normalization.
-                  Similar to skewness, a truly unbiased kurtosis estimator is complex.
-        excess: If True, returns excess kurtosis (Kurt[X] - 3).
-        mask: Optional boolean tensor for masked computation. True for valid elements.
-    Returns:
-        Kurtosis tensor.
-    """
-    if mask is not None:
-        if dim is None: # Global kurtosis with mask
-            num_valid = mask.float().sum().clamp_min(1.0)
-            x_masked = x[mask]
-            if x_masked.numel() == 0: return torch.tensor(float('nan'), device=x.device, dtype=x.dtype)
-            mean_x = x_masked.mean()
-            std_x = x_masked.std(unbiased=unbiased).clamp_min(1e-9)
-            kurt = (((x_masked - mean_x) / std_x)**4).sum() / num_valid
-        else: # Dimension-wise kurtosis with mask
-            if not isinstance(dim, tuple): dim = (dim,)
-            num_valid = mask.float().sum(dim=dim, keepdim=True).clamp_min(1.0)
-            
-            x_times_mask = x * mask.float().unsqueeze(-1) if x.ndim > mask.ndim else x * mask.float()
-            mean_x = x_times_mask.sum(dim=dim, keepdim=True) / num_valid
-            
-            mean_x_sq = (x_times_mask**2).sum(dim=dim, keepdim=True) / num_valid
-            var_x = (mean_x_sq - mean_x**2).clamp_min(0)
-            # No simple unbiased correction for std here with complex mask
-            std_x = torch.sqrt(var_x).clamp_min(1e-9)
+        # Determine output shape if all invalid upfront
+        out_shape_list_for_zeros = list(x.shape)
+        if keepdim:
+            for d_val_idx in dim_tuple:
+                out_shape_list_for_zeros[d_val_idx] = 1
+        else:
+            out_shape_list_for_zeros = [s for i, s in enumerate(x.shape) if i not in dim_tuple]
+            if not out_shape_list_for_zeros: out_shape_list_for_zeros = [1] # for scalar output
 
-            standardized_fourth = (((x - mean_x) / std_x)**4)
-            kurt_sum = (standardized_fourth * mask.float().unsqueeze(-1) if x.ndim > mask.ndim else standardized_fourth * mask.float()).sum(dim=dim, keepdim=True)
-            kurt = kurt_sum / num_valid
-            
-            if not keepdim:
-                for d_idx, d_val in enumerate(sorted(dim, reverse=True)):
-                    kurt = kurt.squeeze(d_val)
-    else: # No mask
-        if dim is None: # Global kurtosis
-            mean_x = x.mean()
-            std_x = x.std(unbiased=unbiased).clamp_min(1e-9)
-            if std_x == 0: # If std is 0, kurtosis is ill-defined or could be taken as 0 for const signal
-                kurt_val = torch.zeros_like(mean_x)
+        if mask is not None:
+            num_valid_for_stats = mask.float().sum(dim=dim_tuple, keepdim=True)
+            computation_valid_mask = (num_valid_for_stats >= min_valid_points_for_skew)
+            if not computation_valid_mask.any():
+                return torch.zeros(out_shape_list_for_zeros, device=x.device, dtype=x.dtype)
+
+            num_valid_clamped = num_valid_for_stats.clamp_min(1.0)
+            expanded_mask_for_x = _expand_mask(mask, x.ndim)
+            x_times_mask = x * expanded_mask_for_x
+            mean_x = x_times_mask.sum(dim=dim_tuple, keepdim=True) / num_valid_clamped
+            mean_x_sq = (x_times_mask**2).sum(dim=dim_tuple, keepdim=True) / num_valid_clamped
+            var_x_biased = (mean_x_sq - mean_x**2).clamp_min(0) # clamp_min(0) before sqrt
+            var_x = var_x_biased * (num_valid_clamped / (num_valid_clamped - 1.0).clamp_min(1e-9)) if unbiased else var_x_biased
+            std_x = torch.sqrt(var_x.clamp_min(0)).clamp_min(1e-9) # ensure var_x is non-negative
+        else: 
+            # Simplified check for non-masked case, assuming dim_tuple[0] is the primary reduction dim
+            if x.shape[dim_tuple[0]] < min_valid_points_for_skew:
+                computation_valid_mask = torch.zeros_like(x.mean(dim=dim_tuple, keepdim=True), dtype=torch.bool)
             else:
-                kurt_val = torch.mean(((x - mean_x) / std_x)**4)
-            kurt = kurt_val
-        else: # Dimension-wise kurtosis
-            mean_x = torch.mean(x, dim=dim, keepdim=True)
-            std_x = torch.std(x, dim=dim, keepdim=True, unbiased=unbiased).clamp_min(1e-9)
+                computation_valid_mask = torch.ones_like(x.mean(dim=dim_tuple, keepdim=True), dtype=torch.bool)
+            if not computation_valid_mask.any():
+                return torch.zeros(out_shape_list_for_zeros, device=x.device, dtype=x.dtype)
+            mean_x = torch.mean(x, dim=dim_tuple, keepdim=True)
+            std_x = torch.std(x, dim=dim_tuple, keepdim=True, unbiased=unbiased).clamp_min(1e-9)
 
-            zero_std_mask = (std_x == 0)
-            kurt_val = torch.mean(((x - mean_x) / std_x)**4, dim=dim, keepdim=True)
-            kurt = torch.where(zero_std_mask, torch.zeros_like(kurt_val), kurt_val)
+        zero_std_mask = (std_x == 0)
+        std_x_safe = torch.where(zero_std_mask, torch.ones_like(std_x), std_x)
+        skew_val_numerator = ((x - mean_x) / std_x_safe)**3
+        if mask is not None:
+            skew_val = (skew_val_numerator * expanded_mask_for_x).sum(dim=dim_tuple, keepdim=True) / num_valid_clamped
+        else: 
+            skew_val = torch.mean(skew_val_numerator, dim=dim_tuple, keepdim=True)
+        
+        final_valid_mask = computation_valid_mask & (~zero_std_mask)
+        skew = torch.where(final_valid_mask, skew_val, torch.zeros_like(skew_val))
+        if not keepdim:
+            # Squeeze dimensions in reverse order of their original index to handle multiple reduced dims correctly
+            for d_val in sorted(dim_tuple, reverse=True): 
+                skew = skew.squeeze(d_val)
+        return skew
+        
+def kurtosis(x: torch.Tensor, dim: Optional[int] = None, keepdim: bool = False, unbiased: bool = True, excess: bool = True, mask: Optional[torch.Tensor] = None, min_valid_points_for_kurt: int = 4) -> torch.Tensor:
+    kurt_zero_value = torch.tensor(0.0, device=x.device, dtype=x.dtype)
+    kurt_return_if_invalid = kurt_zero_value - (3.0 if excess else 0.0)
 
-            if not keepdim:
-                if not isinstance(dim, tuple): dim = (dim,)
-                for d_idx, d_val in enumerate(sorted(dim, reverse=True)):
-                    kurt = kurt.squeeze(d_val)
+    if dim is None:
+        num_elements = mask.float().sum() if mask is not None else x.numel()
+        if num_elements < min_valid_points_for_kurt: return kurt_return_if_invalid # Will broadcast if x was multidim
+        
+        x_proc = x[mask] if mask is not None and x[mask].numel() > 0 else (x if mask is None else torch.empty(0, device=x.device, dtype=x.dtype))
+        if x_proc.numel() < min_valid_points_for_kurt : return kurt_return_if_invalid
 
-    if excess:
-        return kurt - 3.0
-    return kurt
+        mean_x, std_x = x_proc.mean(), x_proc.std(unbiased=unbiased).clamp_min(1e-9)
+        if std_x == 0: kurt_val = torch.zeros_like(mean_x)
+        else: kurt_val = torch.mean(((x_proc - mean_x) / std_x)**4)
+    else:
+        dim_tuple = (dim,) if not isinstance(dim, tuple) else dim
+        
+        out_shape_list_for_zeros = list(x.shape)
+        if keepdim:
+            for d_val_idx in dim_tuple:
+                out_shape_list_for_zeros[d_val_idx] = 1
+        else:
+            out_shape_list_for_zeros = [s for i, s in enumerate(x.shape) if i not in dim_tuple]
+            if not out_shape_list_for_zeros: out_shape_list_for_zeros = [1]
+        
+        kurt_return_if_invalid_shaped = torch.full(out_shape_list_for_zeros, 0.0, device=x.device, dtype=x.dtype) - (3.0 if excess else 0.0)
+
+
+        if mask is not None:
+            num_valid_for_stats = mask.float().sum(dim=dim_tuple, keepdim=True)
+            computation_valid_mask = (num_valid_for_stats >= min_valid_points_for_kurt)
+            if not computation_valid_mask.any(): return kurt_return_if_invalid_shaped
+                
+            num_valid_clamped = num_valid_for_stats.clamp_min(1.0); expanded_mask_for_x = _expand_mask(mask, x.ndim)
+            x_times_mask = x * expanded_mask_for_x
+            mean_x = x_times_mask.sum(dim=dim_tuple, keepdim=True) / num_valid_clamped
+            var_x_biased = ((x_times_mask - mean_x)**2).sum(dim=dim_tuple, keepdim=True) / num_valid_clamped 
+            var_x = var_x_biased * (num_valid_clamped / (num_valid_clamped - 1.0).clamp_min(1e-9)) if unbiased else var_x_biased
+            std_x = torch.sqrt(var_x.clamp_min(0)).clamp_min(1e-9)
+        else:
+            if x.shape[dim_tuple[0]] < min_valid_points_for_kurt: computation_valid_mask = torch.zeros_like(x.mean(dim=dim_tuple, keepdim=True), dtype=torch.bool)
+            else: computation_valid_mask = torch.ones_like(x.mean(dim=dim_tuple, keepdim=True), dtype=torch.bool)
+            if not computation_valid_mask.any(): return kurt_return_if_invalid_shaped
+                
+            mean_x = torch.mean(x, dim=dim_tuple, keepdim=True)
+            std_x = torch.std(x, dim=dim_tuple, keepdim=True, unbiased=unbiased).clamp_min(1e-9)
+
+        zero_std_mask = (std_x == 0)
+        std_x_safe = torch.where(zero_std_mask, torch.ones_like(std_x), std_x)
+        kurt_val_numerator = ((x - mean_x) / std_x_safe)**4
+        if mask is not None:
+            kurt_val = (kurt_val_numerator * expanded_mask_for_x).sum(dim=dim_tuple, keepdim=True) / num_valid_clamped
+        else:
+            kurt_val = torch.mean(kurt_val_numerator, dim=dim_tuple, keepdim=True)
+        
+        final_valid_mask = computation_valid_mask & (~zero_std_mask)
+        # If not valid, kurt_val should be 0 before subtracting excess
+        kurt = torch.where(final_valid_mask, kurt_val, torch.zeros_like(kurt_val))
+        
+        if not keepdim:
+            for d_val in sorted(dim_tuple, reverse=True): kurt = kurt.squeeze(d_val)
+            
+    return kurt - 3.0 if excess else kurt

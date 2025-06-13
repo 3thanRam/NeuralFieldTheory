@@ -2,82 +2,92 @@
 import os
 from alpaca.data.timeframe import TimeFrameUnit
 
-# Get the absolute path of the directory where config.py is located
-# This helps in defining other paths relative to the project root, assuming config.py is at the root or a known location.
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 config = {
     "PROJECT_ROOT":PROJECT_ROOT,
-
+    "mode":"training", #training or testing
     # --- Model Hyperparameters ---
     "model": {
-        "embed_dim": 6,          # Number of features per stock (date, o, c, h, l, v)
-        "max_order_stats": 2,    # Up to which order statistics (1:mean, 2:+std/var, 3:+skew, 4:+kurt)
-        "num_configs": 8,        # Number of configurations in NFT
+        "shared_embed_dim": 128, 
+        # encoder_input_dim will be calculated in main.py based on len(config.data.symbols)
+        # and decoder_embed_dim. It's good practice to have it calculated rather than hardcoded
+        # if it depends on other config values.
+        "decoder_embed_dim": 5,  # For psymbol (timestamp, o,c,h,l) - also features per any symbol
+
+        "num_blocks_enc": 3,
+        "num_blocks_dec": 3,
+        "max_order_enc": 3,
+        "max_order_dec": 3,
+        "num_configs_enc": 8,
+        "num_configs_dec": 8,
+        "max_seq_len_enc": 100, # Matches data.sequence_length for history
+        "max_seq_len_dec": 100, # Matches data.sequence_length for prediction horizon
+        "num_lags_enc": 3,
+        "num_lags_dec": 3,
+        "dropout_rate": 0.1,
     },
 
     # --- Data Generation & Handling ---
     "data": {
-        "total_samples": 10**3,    # Total data samples to generate (train + val)
-        "sequence_length": 50,   # Sequence length for history and prediction horizon
+        "total_samples": 10**3,
+        "sequence_length": 100, # Used for both encoder history and decoder prediction length
         "val_split_ratio": 0.2,
-        # Path to save/load the generated .npz data file
         "data_file_path": os.path.join(PROJECT_ROOT, "data", "nft_trainingdata.npz"),
+        "model_file_path": os.path.join(PROJECT_ROOT, "data", "nft_model_best.pth"),
         "timedelta_config": {
-            "datetime": "days",  # Unit for timedelta calculations ('days', 'minutes', etc.)
-            "alpaca": TimeFrameUnit.Day  # Alpaca TimeFrameUnit (Day, Hour, Minute)
+            "datetime": "days",
+            "alpaca": TimeFrameUnit.Day
         },
-        "symbols": ["GLD", "AAPL", "TSLA", "SPY", "TLT"], # Stock symbols for encoder input
-        "primary_symbol": "GLD", # Target symbol for prediction (decoder output)
-        "force_regenerate_data": True,
-        "force_regenerate_model": True,
+        # IMPORTANT: Ensure primary_symbol is also in this list for Scenario 3.A
+        "symbols": ["GLD", "AAPL", "TSLA", "SPY", "TLT"], # Ensure primary is here.
+        "primary_symbol": "GLD", 
+        "try_load_model":False, # Set to False if you want to force new model for testing this setup
+        "try_load_data":True,   # Set to False to regenerate data if needed
+        "max_years_lookback": 7,
     },
 
     # --- Training Hyperparameters ---
     "training": {
-        "learning_rate": 1e-2,
-        "num_epochs": 50,
+        "sampling_mode":"expectation", 
+        "learning_rate": 1e-1, 
+        "weight_decay": 1e-2,  
+        "scheduler_patience": 5, 
+        "num_epochs": 50, 
         "batch_size": 32,
-        "clip_grad_norm": 1.0, # Max norm for gradient clipping, set to None to disable
-        # Device: 'cuda', 'cpu', or 'auto' (auto-detects CUDA)
-        "device": "auto", # Will be resolved to torch.device in train_main.py
+        "clip_grad_norm": 0.5,
+        "device": "auto",
     },
-
-    # --- Plotting Configuration (for train_main.py) ---
     "plotting": {
-        "feature_index_to_plot": 2, # 0:date, 1:open, 2:close, 3:high, 4:low, 5:volume
-        "num_samples_to_plot": 3,   # How many validation samples to plot after training
+        "num_samples_to_plot": 3
     },
-
-    # --- Alpaca API Keys (Ideally use environment variables, but can be placeholders) ---
-    # It's STRONGLY recommended to use environment variables for API keys.
-    # These are here as a structural example if direct config is absolutely necessary (not advised for sensitive data).
     "api_keys": {
-        "alpaca_api_key_id": os.getenv("APCA_API_KEY_ID"), # Fetches from env var
-        "alpaca_api_secret_key": os.getenv("APCA_API_SECRET_KEY") # Fetches from env var
+        "alpaca_api_key_id": os.getenv("APCA_API_KEY_ID"),
+        "alpaca_api_secret_key": os.getenv("APCA_API_SECRET_KEY")
     }
 }
 
-# You can also add a helper function here to easily access nested dictionary keys
-def get_config_value(key_path, default=None):
-    """
-    Accesses a value from the nested config dictionary using a 'path.to.key' string.
-    Example: get_config_value("model.embed_dim")
-    """
-    keys = key_path.split('.')
-    val = config
-    try:
-        for key in keys:
-            val = val[key]
-        return val
-    except KeyError:
-        return default
-    except TypeError: # If a key leads to a non-dictionary intermediate value
-        return default
+if config["data"]["primary_symbol"] not in config["data"]["symbols"]:
+    print(f"Warning: Primary symbol '{config['data']['primary_symbol']}' was not in 'data.symbols'. Adding it.")
+    # Make a mutable copy if it's a tuple, then append
+    symbols_list = list(config["data"]["symbols"])
+    symbols_list.append(config["data"]["primary_symbol"])
+    # Remove duplicates if any by converting to set and back to list, preserving order is tricky here
+    # A simple way if order doesn't strictly matter for non-primary:
+    # config["data"]["symbols"] = list(set(symbols_list))
+    # If order matters, and you just want to ensure it's present:
+    temp_set = set()
+    ordered_unique_symbols = []
+    for sym in symbols_list:
+        if sym not in temp_set:
+            ordered_unique_symbols.append(sym)
+            temp_set.add(sym)
+    config["data"]["symbols"] = ordered_unique_symbols
 
-if __name__ == '__main__':
-    # Example of using get_config_value
-    print(f"Model Embed Dim: {get_config_value('model.embed_dim')}")
-    print(f"Learning Rate: {get_config_value('training.learning_rate')}")
-    print(f"Data File Path: {get_config_value('data.data_file_path')}")
-    print(f"Alpaca Key ID (from env): {get_config_value('api_keys.alpaca_api_key_id')}")
+
+# Calculate and store encoder_input_dim in the config for clarity and use in main.py/load_model
+# This assumes all symbols will have 'decoder_embed_dim' features.
+num_encoder_features_per_symbol = config["model"]["decoder_embed_dim"]
+config["model"]["encoder_input_dim"] = len(config["data"]["symbols"]) * num_encoder_features_per_symbol
+print(f"Calculated encoder_input_dim: {config['model']['encoder_input_dim']} "
+      f"(based on {len(config['data']['symbols'])} symbols * {num_encoder_features_per_symbol} features each)")
