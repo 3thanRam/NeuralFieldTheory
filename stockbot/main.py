@@ -47,7 +47,11 @@ def main():
             max_seq_len_dec=config["model"]["max_seq_len_dec"],
             num_lags_enc=config["model"]["num_lags_enc"],
             num_lags_dec=config["model"]["num_lags_dec"],
-            dropout_rate=config["model"]["dropout_rate"]
+            dropout_rate=config["model"]["dropout_rate"],
+            lstm_pe_layers_enc=config["model"]["lstm_pe_layers_enc"],
+            lstm_pe_bidirectional_enc=config["model"]["lstm_pe_bidirectional_enc"],
+            lstm_pe_layers_dec=config["model"]["lstm_pe_layers_dec"],
+            lstm_pe_bidirectional_dec=config["model"]["lstm_pe_bidirectional_dec"]
         ).to(DEVICE)
 
     if config["mode"]=="training":

@@ -15,17 +15,21 @@ config = {
         # if it depends on other config values.
         "decoder_embed_dim": 5,  # For psymbol (timestamp, o,c,h,l) - also features per any symbol
 
-        "num_blocks_enc": 3,
-        "num_blocks_dec": 3,
+        "num_blocks_enc": 2,
+        "num_blocks_dec": 2,
         "max_order_enc": 3,
         "max_order_dec": 3,
         "num_configs_enc": 8,
         "num_configs_dec": 8,
         "max_seq_len_enc": 100, # Matches data.sequence_length for history
         "max_seq_len_dec": 100, # Matches data.sequence_length for prediction horizon
-        "num_lags_enc": 3,
-        "num_lags_dec": 3,
+        "num_lags_enc": 50,
+        "num_lags_dec": 50,
         "dropout_rate": 0.1,
+        "lstm_pe_layers_enc":2,
+        "lstm_pe_bidirectional_enc":False,
+        "lstm_pe_layers_dec":2,
+        "lstm_pe_bidirectional_dec":False
     },
 
     # --- Data Generation & Handling ---
@@ -40,7 +44,7 @@ config = {
             "alpaca": TimeFrameUnit.Day
         },
         # IMPORTANT: Ensure primary_symbol is also in this list for Scenario 3.A
-        "symbols": ["GLD", "AAPL", "TSLA", "SPY", "TLT"], # Ensure primary is here.
+        "symbols": ["GLD"], # Ensure primary is here.
         "primary_symbol": "GLD", 
         "try_load_model":False, # Set to False if you want to force new model for testing this setup
         "try_load_data":True,   # Set to False to regenerate data if needed

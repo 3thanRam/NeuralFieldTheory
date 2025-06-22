@@ -1,3 +1,4 @@
+#training.py
 import os
 import torch
 import torch.nn as nn
@@ -239,7 +240,8 @@ def training(model, optimizer_state_dict, start_epoch_arg):
     if optimizer_state_dict:
         try: optimizer.load_state_dict(optimizer_state_dict); print("Optimizer state loaded.")
         except Exception as e: print(f"Could not load optimizer state: {e}. Initializing new optimizer.")
-    criterion = nn.HuberLoss(delta=1.0)
+    #criterion = nn.HuberLoss(delta=1.0)
+    criterion = nn.MSELoss()
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=config["training"].get("scheduler_patience", 5))
     print("\nStarting training..."); NUM_EPOCHS, BATCH_SIZE_TRAIN, CLIP_GRAD_NORM = config["training"]["num_epochs"], config["training"]["batch_size"], config["training"]["clip_grad_norm"]
     best_val_loss = float('inf'); model_save_path = config["data"]["model_file_path"]
