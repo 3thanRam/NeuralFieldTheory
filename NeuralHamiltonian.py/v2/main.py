@@ -2,85 +2,125 @@ import torch
 import os
 import numpy as np
 from config import config 
-from training import training 
-from testing import testing
-from network import HamiltonianModel 
+from training import training,plot_learning_curves
+from testing import testing as dual_testing
 from data_handling import prepare_dataset_from_api
 
+from network import HamiltonianModel 
+from transformer import TransformerModel
 
-def create_optimizer(model, learning_rate=3e-4, weight_decay=1e-2):
-    """
-    Create an advanced optimizer with:
-    - Differential learning rates for different parameter groups
-    - Gradient clipping
-    - Weight decay
-    """
-    # Group parameters for differential learning rates
-    param_groups = [
-        {'params': [p for n, p in model.named_parameters() if 'input_projection' in n or 'lm_head' in n],
-         'lr': learning_rate * 0.5},  # Lower LR for input/output layers
-        {'params': [p for n, p in model.named_parameters() if 'momentum_net' in n],
-         'lr': learning_rate},  # Default LR for momentum net
-        {'params': [p for n, p in model.named_parameters() if 'blocks' in n],
-         'lr': learning_rate * 2},  # Higher LR for Hamiltonian blocks
-    ]
-    
-    # AdamW is generally better than Adam for transformers and similar architectures
-    optimizer = torch.optim.AdamW(
-        param_groups,
-        weight_decay=weight_decay,
-        betas=(0.9, 0.98),  # More stable than default (0.9, 0.999)
-        eps=1e-6
-    )
-    
-    return optimizer
-
-def main():
-    model = HamiltonianModel(
-            num_blocks=config["num_blocks"],
+def get_model(model_type):
+    """Factory function to create a model instance based on type using shared config."""
+    if model_type == "hamiltonian":
+        print("Initializing HamiltonianModel with shared parameters...")
+        model = HamiltonianModel(
+            num_blocks=config["num_layers"],
+            d_hidden_dim=config["d_ffn"],
+            dropout=config["dropout"],
             input_dim=config["input_dim"],
             d_embedding=config["d_embedding"],
-            d_hidden_dim=config["d_hidden_dim"],
             output_dim=config["output_dim"],
             sequence_length=config["sequence_length"],
             timestep=config["timestep"],
         )
-    optimizer = torch.optim.Adam(model.parameters(), lr=config["lr"], weight_decay=config.get("weight_decay", 0))
-    start_epoch = 0
+    elif model_type == "transformer":
+        print("Initializing TransformerModel with shared parameters...")
+        model = TransformerModel(
+            num_encoder_layers=config["num_layers"],
+            dim_feedforward=config["d_ffn"],
+            dropout=config["dropout"],
+            input_dim=config["input_dim"],
+            output_dim=config["output_dim"],
+            d_embedding=config["d_embedding"],
+            nhead=config["nhead"],
+        )
+    else:
+        raise ValueError(f"Unknown model_type: {model_type}")
+    return model
 
-    if config["load_model"] and os.path.exists(config["model_save_path"]):
-        print(f"Loading model checkpoint from {config['model_save_path']}")
-        checkpoint = torch.load(config["model_save_path"], map_location=torch.device(config["device"]))
+def load_checkpoint(model, optimizer, model_type):
+    """
+    Loads a checkpoint for a specific model type from its unique file.
+    Does NOT overwrite anything.
+    """
+    # **CRITICAL**: The path is unique for each model type.
+    model_path = os.path.join(config["model_save_dir"], f"{model_type}_model.pth")
+    start_epoch = 0
+    
+    if config["load_model"] and os.path.exists(model_path):
+        print(f"Loading checkpoint for {model_type} from {model_path}")
+        checkpoint = torch.load(model_path, map_location=torch.device(config["device"]))
         model.load_state_dict(checkpoint['model_state_dict'])
         if 'optimizer_state_dict' in checkpoint and config["mode"] == "train":
-             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            try:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            except ValueError:
+                print("Could not load optimizer state. This is normal if you changed the model architecture.")
         start_epoch = checkpoint.get('epoch', 0)
-        print(f"Loaded model from epoch {start_epoch}. Previous Val Loss (if available in future checkpoints): {checkpoint.get('best_val_loss', 'N/A')}")
+        print(f"Loaded {model_type} from epoch {start_epoch}.")
     else:
-        print("No model loaded or path not found, starting from scratch.")
+        print(f"No checkpoint found for {model_type} at {model_path}. Starting from scratch.")
+    return start_epoch
 
-
+def main():
     if config["mode"] == "train":
+        # Prepare data once for all models
         if config.get("load_training_data", False) and os.path.exists(config["data_save_path"]):
-            print(f"Loading pre-split training data from {config['data_save_path']}...")
+            print(f"Loading shared training data from {config['data_save_path']}...")
             data = np.load(config["data_save_path"])
-            X_train, Y_train, X_val, Y_val = data['X_train'], data['Y_train'], data['X_val'], data['Y_val']
-            # We need to combine them to pass to the training function, which will re-split
-            all_X = np.concatenate([X_train, X_val], axis=0)
-            all_Y = np.concatenate([Y_train, Y_val], axis=0)
+            all_X = np.concatenate([data['X_train'], data['X_val']], axis=0)
+            all_Y = np.concatenate([data['Y_train'], data['Y_val']], axis=0)
         else:
-            # Prepare the entire dataset from the API
             all_X, all_Y = prepare_dataset_from_api(
                 symbols=config["symbols"],
                 primary_symbol=config["primary_symbol"]
             )
         
-        training(model, optimizer, start_epoch, all_X, all_Y)
+        models_to_train = ["hamiltonian", "transformer"] if config["model_type"] == "dual" else [config["model_type"]]
+        
+        # This loop trains one model, saves it, then moves to the next. No overwriting.
+        for model_type in models_to_train:
+            print(f"\n{'='*20} TRAINING: {model_type.upper()} MODEL {'='*20}")
+            model = get_model(model_type)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=1e-4)
+            start_epoch = load_checkpoint(model, optimizer, model_type)
+            
+            # The training function saves the model to its unique path inside the training loop.
+            training(model, optimizer, start_epoch, all_X, all_Y, model_type=model_type)
+            print(f"{'='*20} FINISHED TRAINING: {model_type.upper()} MODEL {'='*20}")
+
     elif config["mode"] == "test":
-        if not config["load_model"] or not os.path.exists(config["model_save_path"]):
-            print("Error: Testing mode requires a pre-trained model to load. Set load_model=True and provide correct model_save_path.")
-            return
-        testing(model)
+        if config["model_type"] == "dual":
+            print(f"\n{'='*20} DUAL TESTING MODE {'='*20}")
+            # --- Load Hamiltonian Model from its file ---
+            model1 = get_model("hamiltonian")
+            # Dummy optimizer needed for the load function signature
+            optimizer1 = torch.optim.AdamW(model1.parameters(), lr=config["lr"]) 
+            _ = load_checkpoint(model1, optimizer1, "hamiltonian")
+
+            # --- Load Transformer Model from its file ---
+            model2 = get_model("transformer")
+            optimizer2 = torch.optim.AdamW(model2.parameters(), lr=config["lr"])
+            _ = load_checkpoint(model2, optimizer2, "transformer")
+
+            # --- Run Comparison Test with the two loaded models ---
+            dual_testing(model1, model2, model1_name="Hamiltonian", model2_name="Transformer")
+            plot_learning_curves()
+
+        else: # Single model testing
+            model_type = config['model_type']
+            print(f"\n{'='*20} SINGLE TESTING MODE: {model_type.upper()} {'='*20}")
+            model = get_model(model_type)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"])
+            _ = load_checkpoint(model, optimizer, model_type)
+            
+            print(f"Generating test plot for single model: {model_type}")
+            dual_testing(model, model, model1_name=model_type, model2_name=f"Actual Future (reference)")
+
+
+    elif config["mode"] == "plot":
+        plot_learning_curves()
+        
     else:
         print(f"Unknown mode: {config['mode']}")
 
