@@ -14,7 +14,7 @@ def get_model(model_type):
     if model_type == "hamiltonian":
         print("Initializing HamiltonianModel with shared parameters...")
         model = HamiltonianModel(
-            num_layers=config["num_layers"],
+            num_blocks=config["num_layers"],
             d_hidden_dim=config["d_ffn"],
             dropout=config["dropout"],
             input_dim=config["input_dim"],
@@ -95,12 +95,12 @@ def main():
             # --- Load Hamiltonian Model from its file ---
             model1 = get_model("hamiltonian")
             # Dummy optimizer needed for the load function signature
-            optimizer1 = torch.optim.AdamW(model1.parameters(), lr=config["lr"]) 
+            optimizer1 = torch.optim.AdamW(model1.parameters(), lr=config["lr"], weight_decay=1e-4) 
             _ = load_checkpoint(model1, optimizer1, "hamiltonian")
 
             # --- Load Transformer Model from its file ---
             model2 = get_model("transformer")
-            optimizer2 = torch.optim.AdamW(model2.parameters(), lr=config["lr"])
+            optimizer2 = torch.optim.AdamW(model2.parameters(), lr=config["lr"], weight_decay=1e-4)
             _ = load_checkpoint(model2, optimizer2, "transformer")
 
             # --- Run Comparison Test with the two loaded models ---
@@ -111,7 +111,7 @@ def main():
             model_type = config['model_type']
             print(f"\n{'='*20} SINGLE TESTING MODE: {model_type.upper()} {'='*20}")
             model = get_model(model_type)
-            optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"])
+            optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=1e-4)
             _ = load_checkpoint(model, optimizer, model_type)
             
             print(f"Generating test plot for single model: {model_type}")

@@ -100,31 +100,24 @@ def differentiable_direction_loss(preds, targets):
     direction_match = torch.sigmoid(10 * pred_changes * true_changes)
     return 1 - direction_match.mean()  # Minimize this
 
+    
 class FinancialLoss(nn.Module):
-    def __init__(self, mse_weight=1.0, direction_weight=0.3, volatility_weight=0.1):
+    def __init__(self, mse_weight=0.8, direction_weight=0.2):
         super().__init__()
         self.mse_weight = mse_weight
         self.direction_weight = direction_weight
-        self.volatility_weight = volatility_weight
         
     def forward(self, preds, targets):
-        # Standard MSE - now using correct F import
         mse_loss = F.mse_loss(preds, targets)
         
-        # Directional loss
-        pred_changes = preds[:, 1:, 1] - preds[:, :-1, 1]  # Close price changes
-        true_changes = targets[:, 1:, 1] - targets[:, :-1, 1]
-        direction_match = torch.sigmoid(10 * pred_changes * true_changes)
-        dir_loss = 1 - direction_match.mean()
+        # Directional accuracy (simplified)
+        pred_direction = torch.sign(preds[:, :, 1] - preds[:, :, 0])  # close - open
+        true_direction = torch.sign(targets[:, :, 1] - targets[:, :, 0])
+        dir_loss = F.binary_cross_entropy_with_logits(
+            pred_direction * true_direction, 
+            torch.ones_like(pred_direction))
         
-        # Volatility matching loss
-        pred_vol = preds[:, :, 1].std(dim=1)  # Close price volatility
-        true_vol = targets[:, :, 1].std(dim=1)
-        vol_loss = F.mse_loss(pred_vol, true_vol)
-        
-        return (self.mse_weight * mse_loss + 
-                self.direction_weight * dir_loss +
-                self.volatility_weight * vol_loss)
+        return self.mse_weight * mse_loss + self.direction_weight * dir_loss
 
 def get_current_weights(epoch, max_epochs):
     """Gradually increase metric-based loss weights"""
@@ -132,7 +125,7 @@ def get_current_weights(epoch, max_epochs):
     return {
         'mse_weight': max(0.7, 1.0 - progress * 0.5),  # Reduce MSE over time
         'direction_weight': min(0.5, progress * 0.7),  # Increase direction focus
-        'volatility_weight': min(0.3, progress * 0.4)
+        #'volatility_weight': min(0.3, progress * 0.4)
     }
 
 def training(model, optimizer, start_epoch, all_X, all_Y, model_type):

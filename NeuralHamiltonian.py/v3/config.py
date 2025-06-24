@@ -4,7 +4,7 @@ import os
 import torch
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-SYMBOLS = ["GLD", "AAPL", "TSLA", "SPY", "TLT"]
+SYMBOLS = ["GLD", "AAPL", "TSLA", "SPY", "TLT","NVDA","AMZN"]
 PRIMARY_SYMBOL = "GLD"
 INPUT_DIM = len(SYMBOLS) * 4 
 OUTPUT_DIM = 4
@@ -25,7 +25,7 @@ config={
     
     # --- SHARED ARCHITECTURE PARAMETERS for Fair Comparison ---
     "d_embedding": 128,         # Embedding dimension for both models
-    "num_layers": 3,            # SHARED: num_layers (Hamiltonian) and num_encoder_layers (Transformer)
+    "num_layers": 1,            # SHARED: num_layers (Hamiltonian) and num_encoder_layers (Transformer)
     "d_ffn": 128,               # SHARED: d_hidden_dim (Hamiltonian) and dim_feedforward (Transformer)
     "dropout": 0.1,             # SHARED: Dropout rate for both models
 
@@ -36,7 +36,7 @@ config={
     # --- Shared Model Config (Dimensions) ---
     "output_dim": OUTPUT_DIM,
     "input_dim": INPUT_DIM,
-    "sequence_length": 200,
+    "sequence_length": 100,
     
     # --- Data and API Config ---
     "symbols": SYMBOLS,
