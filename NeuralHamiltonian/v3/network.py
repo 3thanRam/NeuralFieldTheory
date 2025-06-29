@@ -110,37 +110,36 @@ class HamiltonianBlock(nn.Module):
         super().__init__()
         
         # --- Explicit Inductive Bias Terms ---
-        self.coef_linear_q = nn.Parameter(torch.randn(d_embedding) * 0.01)
-        self.coef_linear_p = nn.Parameter(torch.randn(d_embedding) * 0.01)
-        self.coef_quadratic_qq = nn.Parameter(torch.randn(d_embedding, d_embedding) * 0.01)
-        self.coef_quadratic_pp = nn.Parameter(torch.randn(d_embedding, d_embedding) * 0.01)
-        self.coef_quadratic_qp = nn.Parameter(torch.randn(d_embedding, d_embedding) * 0.01)
+        self.coef_linear_q = nn.Parameter(torch.randn(d_embedding))
+        self.coef_linear_p = nn.Parameter(torch.randn(d_embedding))
+        self.coef_quadratic_qq = nn.Parameter(torch.randn(d_embedding, d_embedding))
+        self.coef_quadratic_pp = nn.Parameter(torch.randn(d_embedding, d_embedding))
+        self.coef_quadratic_qp = nn.Parameter(torch.randn(d_embedding, d_embedding))
         
         # --- Learned Non-linear Interaction Term ---
         self.interaction_module = SubspaceInteraction(
             d_embedding=d_embedding,
             d_hidden_dim=d_hidden_dim,
-            num_subspaces=8, # Hyperparameter: how many "lenses" to view the data through
-            subspace_dim=d_hidden_dim//2  # Hyperparameter: dimension of each "lens"
+            num_subspaces=6, # Hyperparameter: how many "lenses" to view the data through
+            subspace_dim=d_hidden_dim//4  # Hyperparameter: dimension of each "lens"
         )
         self.h_offset = nn.Parameter(torch.randn(1))
 
     def forward(self, q: torch.Tensor, p: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         # 1. Linear Energy Contributions
-        H_linear = torch.einsum('bsd,d->b', q, self.coef_linear_q).sum() + \
-                   torch.einsum('bsd,d->b', p, self.coef_linear_p).sum()
+        H_linear = torch.einsum('bsd,d->b', q, self.coef_linear_q).sum() + torch.einsum('bsd,d->b', p, self.coef_linear_p).sum()
 
         # 2. Quadratic Energy Contributions
-        #H_quad_qq = torch.einsum('bid,dk,bjd->b', q, self.coef_quadratic_qq, q).sum()
-        #H_quad_pp = torch.einsum('bid,dk,bjd->b', p, self.coef_quadratic_pp, p).sum()
-        #H_quad_qp = torch.einsum('bid,dk,bjd->b', q, self.coef_quadratic_qp, p).sum()
+        H_quad_pp = torch.einsum('bid,dk,bjd->b', p, self.coef_quadratic_pp, p).sum()
+        H_quad_qp = torch.einsum('bid,dk,bjd->b', q, self.coef_quadratic_qp, p).sum()
+        H_quad_qq = torch.einsum('bid,dk,bjd->b', q, self.coef_quadratic_qq, q).sum()
 
         # 3. Learned Non-linear Energy Contribution from Subspace Interactions
         H_neural = self.interaction_module(q, p)
 
         # 4. Total Hamiltonian
         H_total =( self.h_offset + H_linear +
-        #H_quad_qq + H_quad_pp + H_quad_qp +
+        H_quad_qq + H_quad_pp + H_quad_qp +
         H_neural)
         
         return H_total
@@ -155,11 +154,12 @@ class HamiltonianModel(nn.Module):
         self.num_blocks = num_blocks
         self.timestep = timestep
         self.clip_value = 1.0
-
+        self.eps = 1e-4
         self.input_projection = nn.Linear(input_dim, d_embedding)
         self.pos_encoder = PositionalEncoding(d_embedding)
         self.dropout = nn.Dropout(dropout)
         
+        self.q_shift = nn.Parameter(torch.zeros(d_embedding))
         self.momentum_net = nn.Sequential(
             nn.Linear(d_embedding, d_hidden_dim // 2),
             nn.Tanh(),
@@ -176,27 +176,37 @@ class HamiltonianModel(nn.Module):
         self.norm = nn.LayerNorm(d_embedding)
         self.lm_head =nn.Sequential( nn.Linear(d_embedding, output_dim),nn.Softplus())
 
-    def update_vars(self, q: torch.Tensor, p: torch.Tensor, H_scalar: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        grad_H_q = torch.autograd.grad(H_scalar, q, create_graph=True)[0]
-        grad_H_p = torch.autograd.grad(H_scalar, p, create_graph=True)[0]
+    def update_vars(self, q: torch.Tensor, p: torch.Tensor, H_func) -> tuple[torch.Tensor, torch.Tensor]:
+        H_initial = H_func(q, p)
+        grad_H_q = torch.autograd.grad(H_initial.sum(), q, create_graph=True)[0]
+        p_half = p - (self.timestep / 2.0) * grad_H_q
+    
+        # Full step for position q using the half-step momentum
+        H_mid = H_func(q, p_half) # Note: Technically grad should be evaluated at q, p_half
+        grad_H_p_mid = torch.autograd.grad(H_mid.sum(), p_half, create_graph=True)[0]
+        q_new = q + self.timestep * grad_H_p_mid
+    
+        # Final half-step for momentum p using the new position q
+        H_final = H_func(q_new, p_half)
+        grad_H_q_final = torch.autograd.grad(H_final.sum(), q_new, create_graph=True)[0]
+        p_new = p_half - (self.timestep / 2.0) * grad_H_q_final
         
-        # Using a stable semi-implicit Euler integrator
-        p_new = p - self.timestep * grad_H_q
-        q_new = q + self.timestep * grad_H_p
-
+        # Clamp for stability
         q_new = torch.clamp(q_new, -10, 10)
         p_new = torch.clamp(p_new, -10, 10)
         
         return q_new, p_new
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
-        q_initial = self.dropout(self.pos_encoder(self.input_projection(x)))
-        q = q_initial.clone().requires_grad_(True)
-        p = self.momentum_net(q).requires_grad_(True)
+        q_proj = self.pos_encoder(self.input_projection(x))
+        q = self.dropout(q_proj + self.q_shift)
+
+        #q = q_initial.clone().requires_grad_(True)
+        p = self.momentum_net(q) #.requires_grad_(True)
         
         for blk in self.blocks:
-            H_scalar = blk(q, p, mask)
-            q, p = self.update_vars(q, p, H_scalar)
+            q, p = self.update_vars(q, p,blk)
+
 
         output = self.norm(q)
         logits = self.lm_head(output)
@@ -205,7 +215,6 @@ class HamiltonianModel(nn.Module):
     @torch.no_grad()
     def generate(self, input_sequence: torch.Tensor, n_to_pred: int):
         self.eval()
-        from config import config # Local import
         symbols = config["symbols"]
         primary_symbol = config["primary_symbol"]
         

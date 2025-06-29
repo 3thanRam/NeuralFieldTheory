@@ -13,7 +13,7 @@ MODEL_TYPE = "hamiltonian" #"hamiltonian", "transformer","dual"
 
 config={
     "model_type": MODEL_TYPE,
-    "mode": "train", #train,test,plot
+    "mode": "test", #train,test,plot
     "load_model": False,
     "load_training_data": False,
 
@@ -24,14 +24,14 @@ config={
     "data_save_path": os.path.join(PROJECT_ROOT, "data", "trainingdata.npz"),
     
     # --- SHARED ARCHITECTURE PARAMETERS for Fair Comparison ---
-    "d_embedding": 128,         # Embedding dimension for both models
+    "d_embedding": 256,         # Embedding dimension for both models
     "num_layers": 1,            # SHARED: num_layers (Hamiltonian) and num_encoder_layers (Transformer)
-    "d_ffn": 128,               # SHARED: d_hidden_dim (Hamiltonian) and dim_feedforward (Transformer)
+    "d_ffn": 256,               # SHARED: d_hidden_dim (Hamiltonian) and dim_feedforward (Transformer)
     "dropout": 0.1,             # SHARED: Dropout rate for both models
 
     # --- Model-Specific Parameters ---
     "nhead": 8,                 # Transformer-specific: Number of attention heads
-    "timestep": 1,              # Hamiltonian-specific
+    "timestep": 0.2,              # Hamiltonian-specific
     
     # --- Shared Model Config (Dimensions) ---
     "output_dim": OUTPUT_DIM,

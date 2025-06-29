@@ -9,6 +9,9 @@ from data_handling import prepare_dataset_from_api
 from network import HamiltonianModel 
 from transformer import TransformerModel
 
+
+from torchinfo import summary
+
 def get_model(model_type):
     """Factory function to create a model instance based on type using shared config."""
     if model_type == "hamiltonian":
@@ -62,6 +65,33 @@ def load_checkpoint(model, optimizer, model_type):
         print(f"No checkpoint found for {model_type} at {model_path}. Starting from scratch.")
     return start_epoch
 
+
+def print_model_parameters(model):
+    """
+    Prints a detailed summary of the model's parameters, including their
+    names, shapes, number of elements, and training status. Also prints
+    the total number of trainable and non-trainable parameters.
+    """
+    print(f"{'Parameter Name':<70} {'Shape':<25} {'Num Elements':<15} {'Trainable':<10}")
+    print("="*120)
+
+    total_params = 0
+    trainable_params = 0
+
+    for name, param in model.named_parameters():
+        num_elements = param.numel()
+        total_params += num_elements
+        is_trainable = param.requires_grad
+        if is_trainable:
+            trainable_params += num_elements
+
+        print(f"{name:<70} {str(param.shape):<25} {num_elements:<15} {is_trainable!s:<10}")
+
+    print("="*120)
+    print(f"Total Parameters:      {total_params:,}")
+    print(f"Trainable Parameters:  {trainable_params:,}")
+    print(f"Non-Trainable Params:  {(total_params - trainable_params):,}")
+    print("="*120)
 def main():
     if config["mode"] == "train":
         # Prepare data once for all models
@@ -121,6 +151,18 @@ def main():
     elif config["mode"] == "plot":
         plot_learning_curves()
         
+    elif config["mode"] == "summary":
+        print("\n--- Torchinfo Summary ---")
+        model = get_model("hamiltonian")
+        print_model_parameters(model)
+        #model.train()
+        #summary(
+        #    model, 
+        #    input_size=(4, config["sequence_length"], config["input_dim"]), 
+        #    col_names=["input_size", "output_size", "num_params", "mult_adds"],
+        #    mode="train"  # <--- THIS IS THE FIX
+        #)
+    
     else:
         print(f"Unknown mode: {config['mode']}")
 

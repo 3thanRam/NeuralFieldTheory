@@ -102,28 +102,47 @@ def differentiable_direction_loss(preds, targets):
 
     
 class FinancialLoss(nn.Module):
-    def __init__(self, mse_weight=0.8, direction_weight=0.2):
+    def __init__(self, huber_weight=0.7, direction_weight=0.3):
         super().__init__()
-        self.mse_weight = mse_weight
+        self.huber_weight = huber_weight
         self.direction_weight = direction_weight
-        
+        # Use CosineEmbeddingLoss which is designed for this purpose
+        self.cosine_loss = nn.CosineEmbeddingLoss(reduction='mean')
+
     def forward(self, preds, targets):
-        mse_loss = F.mse_loss(preds, targets)
+        # 1. Magnitude Loss (using Huber Loss for robustness)
+        # It's better than MSE for financial data.
+        magnitude_loss = F.smooth_l1_loss(preds, targets)
         
-        # Directional accuracy (simplified)
-        pred_direction = torch.sign(preds[:, :, 1] - preds[:, :, 0])  # close - open
-        true_direction = torch.sign(targets[:, :, 1] - targets[:, :, 0])
-        dir_loss = F.binary_cross_entropy_with_logits(
-            pred_direction * true_direction, 
-            torch.ones_like(pred_direction))
+        # 2. Directional Loss
+        # We want to measure the direction of the *change* from a reference point.
+        # Let's assume the input shape is (batch, seq, features) and we care about
+        # the change from the last *known* value to the predicted one.
+        # For simplicity, let's assume we predict one step ahead from a sequence.
+        # Let's use Open-to-Close change as the vector.
         
-        return self.mse_weight * mse_loss + self.direction_weight * dir_loss
+        # preds and targets shape: (batch_size, seq_len, 4) where features are OHLC
+        # Let's assume seq_len = 1 for this example.
+        pred_change_vector = preds[:, :, 1] - preds[:, :, 0]  # Predicted Close - Predicted Open
+        true_change_vector = targets[:, :, 1] - targets[:, :, 0]  # True Close - True Open
+        
+        # The target for CosineEmbeddingLoss is a tensor of 1s, which means
+        # we want the cosine similarity to be as close to 1 as possible.
+        y = torch.ones(preds.size(0)).to(preds.device)
+        
+        # The loss is 1 - cosine(x1, x2). So it's 0 for perfect alignment.
+        directional_loss = self.cosine_loss(pred_change_vector, true_change_vector, y)
+        
+        # 3. Combine the losses
+        total_loss = self.huber_weight * magnitude_loss + self.direction_weight * directional_loss
+        
+        return total_loss
 
 def get_current_weights(epoch, max_epochs):
     """Gradually increase metric-based loss weights"""
     progress = epoch / max_epochs
     return {
-        'mse_weight': max(0.7, 1.0 - progress * 0.5),  # Reduce MSE over time
+        'huber_weight': max(0.7, 1.0 - progress * 0.5),  # Reduce MSE over time
         'direction_weight': min(0.5, progress * 0.7),  # Increase direction focus
         #'volatility_weight': min(0.3, progress * 0.4)
     }
