@@ -91,7 +91,9 @@ def testing(model1, model2, model1_name="Hamiltonian", model2_name="Transformer"
     
     # Extract the historical OHLC for the primary symbol from the input
     primary_idx = config["symbols"].index(config["primary_symbol"])
-    start_col, end_col = primary_idx * 4, primary_idx * 4 + 4
+    num_features_per_symbol = 5
+    start_col = primary_idx * num_features_per_symbol
+    end_col = start_col + 4
     historical_ohlc = test_sample_X[0, :, start_col:end_col].cpu().numpy()
 
     # --- Plotting ---

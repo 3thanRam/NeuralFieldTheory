@@ -90,46 +90,52 @@ def epoch_loop(system: system_config, epoch_idx: int) -> bool:
     scaler = torch.amp.grad_scaler.GradScaler(enabled=(device.type == 'cuda'))
     epoch_total_loss_sum = 0; processed_batches_train = 0; stop_training_flag = False
 
+    log_interval = 10
     model.train()
-    batch_iterator = tqdm(train_dataloader, desc=f"Train Epoch {epoch_idx + 1}/{system.num_epochs}", unit="batch", leave=False)
+    # Use enumerate to get the batch index for periodic logging
+    batch_iterator = tqdm(enumerate(train_dataloader), total=len(train_dataloader), desc=f"Train Epoch {epoch_idx + 1}/{system.num_epochs}", unit="batch", leave=False)
+    
     try:
-        for batch_data in batch_iterator:
+        for batch_idx, batch_data in batch_iterator:
             input_tensor, target_tensor = batch_data[0].to(device), batch_data[1].to(device)
             padding_mask = (input_tensor != system.pad_idx)
             optimizer.zero_grad(set_to_none=True)
 
             with torch.amp.autocast_mode.autocast(device_type=device.type,enabled=(device.type == 'cuda')):
-                # --- CHANGE: Unpack the new return value ---
-                logits, hidden_state, ham_internals, jac_internals, consistency_internals, rev_loss = model(input_tensor, mask=padding_mask, return_internals=True)
-
-                # --- CHANGE: Pass the pre-computed loss to the criterion ---
-                loss, loss_logs = criterion(
-                    model, logits, target_tensor,
-                    hidden_state, ham_internals, jac_internals,
-                    consistency_internals,
-                    rev_loss, # Pass the new term
-                    padding_mask
-                )
-
+                outputs = model(input_tensor, mask=padding_mask, return_internals=True)
+                loss, loss_logs = criterion(outputs, target_tensor)
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
             
-            epoch_total_loss_sum += loss_logs['total']
+            epoch_total_loss_sum += loss_logs['total_loss']
             processed_batches_train += 1
             
-            postfix_str = (
-                f"total:{loss_logs['total']:.2f}|"
-                f"nll:{loss_logs['nll']:.2f}|"
-                f"con:{loss_logs['conservation']:.2f}|"
-                f"dec:{loss_logs['decorrelation']:.2f}|"
-                f"rev:{loss_logs['reversibility']:.2f}|"
-                f"jac:{loss_logs['jacobian']:.2f}|"
-                f"mom:{loss_logs['mom_const']:.2f}"
-            )
-            batch_iterator.set_postfix_str(postfix_str)
-            
+            # --- CHANGE 1: Simplify the postfix to show only key metrics ---
+            # This ensures the main progress bar line stays clean and doesn't truncate.
+            postfix_dict = {
+                'loss': f"{loss_logs['total_loss']:.2f}",
+                'nll': f"{loss_logs['cross_entropy']:.2f}"
+            }
+            batch_iterator.set_postfix(postfix_dict)
+
+            # --- CHANGE 2: Periodically print a detailed, multi-line summary ---
+            if (batch_idx + 1) % log_interval == 0:
+                # Construct the detailed string
+                log_str = (
+                    f"  [Batch {batch_idx + 1}/{len(train_dataloader)}] "
+                    f"Total: {loss_logs['total_loss']:.3f} | NLL: {loss_logs['cross_entropy']:.3f}\n"
+                    f"  Aux -> SN: {loss_logs['state_norm']:.3f} | "
+                    f"EC: {loss_logs['energy_conservation']:.3f} | "
+                    f"Rev: {loss_logs['reversibility']:.3f}\n"
+                    f"         Dec: {loss_logs['decorrelation']:.3f} | "
+                    f"Jac: {loss_logs['jacobian']:.3f} | "
+                    f"Mom: {loss_logs['mom_consistency']:.3f}"
+                )
+                # Use tqdm.write to print above the progress bar without disturbing it
+                batch_iterator.write(log_str)
+
     except KeyboardInterrupt:
         print(f"\nTraining interrupted by user."); stop_training_flag = True
     finally: batch_iterator.close()
@@ -145,23 +151,25 @@ def epoch_loop(system: system_config, epoch_idx: int) -> bool:
         model.eval()
         epoch_val_total_loss_sum = 0.0; processed_batches_val = 0
         val_iterator = tqdm(val_dataloader, desc=f"Validate Epoch {epoch_idx + 1}", unit="batch", leave=False)
-        with torch.no_grad():
+        # In validation, we still need the grad context for the model's forward pass
+        with torch.enable_grad():
             try:
                 for batch_data_val in val_iterator:
                     input_tensor_val, target_tensor_val = batch_data_val[0].to(device), batch_data_val[1].to(device)
                     padding_mask_val = (input_tensor_val != system.pad_idx)
-                    with torch.enable_grad(), torch.amp.autocast_mode.autocast(device_type=device.type,enabled=(device.type == 'cuda')):
-                        logits_val, hidden_state_val, ham_internals_val, jac_internals_val, consistency_internals_val, rev_loss_val = model(input_tensor_val, mask=padding_mask_val, return_internals=True)
-                    loss_val, loss_logs_val = criterion(
-                        model, logits_val, target_tensor_val,
-                        hidden_state_val, ham_internals_val, jac_internals_val,
-                        consistency_internals_val,
-                        rev_loss_val,
-                        padding_mask_val
-                    )
-                    epoch_val_total_loss_sum += loss_logs_val['total']
+                    
+                    with torch.amp.autocast_mode.autocast(device_type=device.type,enabled=(device.type == 'cuda')):
+                        # --- CHANGE 1 (repeated): Unpack outputs cleanly ---
+                        outputs_val = model(input_tensor_val, mask=padding_mask_val, return_internals=True)
+                    
+                    # --- CHANGE 2 (repeated): Call criterion cleanly ---
+                    # The loss calculation itself doesn't need gradients
+                    with torch.no_grad():
+                        loss_val, loss_logs_val = criterion(outputs_val, target_tensor_val)
+
+                    epoch_val_total_loss_sum += loss_logs_val['total_loss']
                     processed_batches_val += 1
-                    val_iterator.set_postfix({"loss": f"{loss_logs_val['total']:.4f}"})
+                    val_iterator.set_postfix({"loss": f"{loss_logs_val['total_loss']:.4f}"})
             except KeyboardInterrupt: print(f"\nValidation interrupted by user.")
             finally: val_iterator.close()
         if processed_batches_val > 0:

@@ -4,16 +4,16 @@ import os
 import torch
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-SYMBOLS = ["GLD", "AAPL", "TSLA", "SPY", "TLT","NVDA","AMZN"]
+SYMBOLS = ["GLD", "AAPL", "TSLA", "SPY", "TLT","NVDA","AMZN","MSFT","GOOGL","META","AVGO","BRK.B","TSM"]
 PRIMARY_SYMBOL = "GLD"
-INPUT_DIM = len(SYMBOLS) * 4 
+INPUT_DIM = len(SYMBOLS) * 5 
 OUTPUT_DIM = 4
 
 MODEL_TYPE = "hamiltonian" #"hamiltonian", "transformer","dual"
 
 config={
     "model_type": MODEL_TYPE,
-    "mode": "test", #train,test,plot
+    "mode": "test", #train,test,plot,summary
     "load_model": True,
     "load_training_data": False,
 
@@ -24,7 +24,7 @@ config={
     "data_save_path": os.path.join(PROJECT_ROOT, "data", "trainingdata.npz"),
     
     # --- SHARED ARCHITECTURE PARAMETERS for Fair Comparison ---
-    "d_embedding": 256,         # Embedding dimension for both models
+    "d_embedding": 128,         # Embedding dimension for both models
     "num_layers": 2,            # SHARED: num_layers (Hamiltonian) and num_encoder_layers (Transformer)
     "d_ffn": 256,               # SHARED: d_hidden_dim (Hamiltonian) and dim_feedforward (Transformer)
     "dropout": 0.1,             # SHARED: Dropout rate for both models
@@ -32,7 +32,8 @@ config={
     # --- Model-Specific Parameters ---
     "nhead": 8,                 # Transformer-specific: Number of attention heads
     "timestep": 0.2,              # Hamiltonian-specific
-    
+    "num_subspaces":6,
+    "subspace_dim":128,
     # --- Shared Model Config (Dimensions) ---
     "output_dim": OUTPUT_DIM,
     "input_dim": INPUT_DIM,
@@ -47,7 +48,7 @@ config={
     },
     
     # --- Training Config ---
-    "num_epoch": 150,
+    "num_epoch": 200,
     "batch_size": 32,
     "lr": 1e-3,
     "VAL_SPLIT_RATIO": 0.15,

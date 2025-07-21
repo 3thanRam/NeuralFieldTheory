@@ -18,16 +18,18 @@ class system_config:
                  # Hamiltonian-specific params
                  num_blocks=2,
                  dropout=0.1,
+                 momentum_noise_sigma=0.1,
                  # Attention-specific params
                  n_head=4,
                  num_subspaces=4,
                  subspace_dim=64,
                  # Loss function weights
-                 conservation_weight=1,
+                 state_norm_weight=1e-6, 
+                 energy_conservation_weight=1e-6,
                  decorrelation_weight=1,
                  reversibility_weight=1,
                  jacobian_weight=0.1,
-                 momentum_consistency_weight=0.5
+                 momentum_consistency_weight=0.5,
                  ):
 
         self.ckpt = os.path.join(FILEPATH, "model_data", "checkpoint.pth.tar")
@@ -60,18 +62,21 @@ class system_config:
         self.n_head = n_head
         self.num_subspaces = num_subspaces
         self.subspace_dim = subspace_dim
-        self.conservation_weight = conservation_weight
+        self.state_norm_weight = state_norm_weight
+        self.energy_conservation_weight = energy_conservation_weight
         self.decorrelation_weight = decorrelation_weight
         self.reversibility_weight = reversibility_weight
         self.jacobian_weight = jacobian_weight
         self.momentum_consistency_weight = momentum_consistency_weight 
+        self.momentum_noise_sigma=momentum_noise_sigma
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
 
         self.get_tokeniser()
 
         self.criterion = CompositeCriterion(
-            conservation_weight=self.conservation_weight,
+            state_norm_weight=self.state_norm_weight,
+            energy_conservation_weight=self.energy_conservation_weight,
             decorrelation_weight=self.decorrelation_weight,
             reversibility_weight=self.reversibility_weight,
             jacobian_weight=self.jacobian_weight,
@@ -184,7 +189,7 @@ class system_config:
             model = HamiltonianModel(
                 num_blocks=self.num_blocks, input_dim=self.embed_dim, d_embedding=self.embed_dim,
                 d_hidden_dim=self.embed_dim * 4, output_dim=self.vocab_size,
-                vocab_size=self.vocab_size, embed_dim=self.embed_dim, pad_idx=self.pad_idx,
+                vocab_size=self.vocab_size, embed_dim=self.embed_dim, pad_idx=self.pad_idx,momentum_noise_sigma=self.momentum_noise_sigma,
                 **model_kwargs
             )
         else:

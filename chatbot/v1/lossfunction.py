@@ -2,109 +2,114 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Dict
 
-# ... (compute_nll_loss, compute_conservation_loss, compute_decorrelation_loss, compute_reversibility_loss, compute_jacobian_loss are unchanged) ...
-def compute_nll_loss(logits: torch.Tensor, targets: torch.Tensor, ignore_index: int) -> torch.Tensor:
-    return F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=ignore_index)
-def compute_conservation_loss(Q_i: torch.Tensor, P_i: torch.Tensor, Q_f: torch.Tensor, P_f: torch.Tensor) -> torch.Tensor:
-    N_initial = (Q_i.pow(2) + P_i.pow(2)).sum(dim=-1).mean(); N_final = (Q_f.pow(2) + P_f.pow(2)).sum(dim=-1).mean()
-    return F.mse_loss(N_final, N_initial)
-def compute_decorrelation_loss(hidden_states: torch.Tensor, padding_mask: torch.Tensor) -> torch.Tensor:
-    B, T, C = hidden_states.shape
-    if T <= 1: return torch.tensor(0.0, device=hidden_states.device)
-    normed_hidden = F.normalize(hidden_states, p=2, dim=2)
-    token_pair_mask = padding_mask.unsqueeze(2) & padding_mask.unsqueeze(1)
-    eye_mask = ~torch.eye(T, device=hidden_states.device, dtype=torch.bool).unsqueeze(0)
-    final_mask = token_pair_mask & eye_mask
-    corr_matrices = torch.bmm(normed_hidden, normed_hidden.transpose(1, 2))
-    total_corr_sq = corr_matrices.masked_select(final_mask).pow(2).sum()
-    num_valid_pairs = final_mask.float().sum().clamp_min(1.0)
-    return total_corr_sq / num_valid_pairs
-def compute_reversibility_loss(model: nn.Module, ham_internals: Tuple) -> torch.Tensor:
-    Q_i, P_i, Q_f, P_f = ham_internals; Q_rev, P_rev = Q_f, P_f
-    for block in reversed(model.blocks): Q_rev, P_rev = model.leapfrog_update(Q_rev, P_rev, block, timestep=-model.timestep)
-    loss_q = F.mse_loss(Q_rev, Q_i); loss_p = F.mse_loss(P_rev, P_i)
-    return loss_q + loss_p
-def compute_jacobian_loss(jac_internals: Tuple, padding_mask: torch.Tensor) -> torch.Tensor:
-    log_s1, log_s2 = jac_internals; mask = padding_mask.unsqueeze(-1).float(); num_valid = padding_mask.sum().clamp_min(1.0)
-    loss_s1 = (log_s1 * mask).abs().sum(); loss_s2 = (log_s2 * mask).abs().sum()
-    return (loss_s1 + loss_s2) / num_valid
-
-# --- NEW LOSS FUNCTION ---
-def compute_momentum_consistency_loss(model: nn.Module, consistency_internals: Tuple, padding_mask: torch.Tensor) -> torch.Tensor:
-    """Enforces that the momentum_net's mapping is consistent with the dynamics."""
-    q_final, p_final = consistency_internals
-
-    # Calculate the velocity of the final state
-    dq_final = torch.zeros_like(q_final)
-    dq_final[:, 1:, :] = q_final[:, 1:, :] - q_final[:, :-1, :]
-
-    # Re-compute momentum from the final state
-    momentum_net_input = torch.cat([q_final, dq_final], dim=-1)
-    p_recomputed = model.momentum_net(momentum_net_input)
-
-    # We only care about the error on non-padded tokens
-    mask = padding_mask.unsqueeze(-1).float()
-    
-    # Calculate masked MSE
-    error = (p_recomputed - p_final).pow(2) * mask
-    loss = error.sum() / mask.sum().clamp_min(1.0)
-    
-    return loss
-
-# In lossfunction.py
-
-class CompositeCriterion:
-    def __init__(self, conservation_weight: float = 0.01, decorrelation_weight: float = 0.1, reversibility_weight: float = 0.01, jacobian_weight: float = 0.01, momentum_consistency_weight: float = 0.01, ignore_index: int = -100):
-        self.ignore_index = ignore_index
-        self.λ_conserve = conservation_weight
-        self.λ_decorr = decorrelation_weight
-        self.λ_reverse = reversibility_weight
-        self.λ_jacobian = jacobian_weight
-        self.λ_mom_const = momentum_consistency_weight
-
-    def __call__(self, model: nn.Module, logits: torch.Tensor, targets: torch.Tensor, hidden_state: torch.Tensor, ham_internals: Tuple, jac_internals: Tuple, consistency_internals: Tuple, reversibility_loss_term: torch.Tensor, padding_mask: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, float]]:
-        # This part is fine
-        loss_nll = compute_nll_loss(logits, targets, self.ignore_index)
+class CompositeCriterion(nn.Module):
+    # This __init__ now includes all the weights from your config
+    def __init__(self, state_norm_weight=1.0, energy_conservation_weight=1.0, decorrelation_weight=1.0, 
+                 reversibility_weight=1.0, jacobian_weight=0.1, 
+                 momentum_consistency_weight=0.5, ignore_index=-100):
+        super().__init__()
+        self.cross_entropy_loss = nn.CrossEntropyLoss(ignore_index=ignore_index)
         
-        # Initialize all regularizers to zero tensors on the correct device
-        # This is good practice
-        device = logits.device
-        loss_conserve = torch.tensor(0.0, device=device)
-        loss_decorr = torch.tensor(0.0, device=device)
-        loss_reverse = reversibility_loss_term # This is already a tensor from the model
-        loss_jacobian = torch.tensor(0.0, device=device)
-        loss_mom_const = torch.tensor(0.0, device=device)
+        # Store all weights
+        self.state_norm_weight = state_norm_weight
+        self.energy_conservation_weight = energy_conservation_weight
+        self.decorrelation_weight = decorrelation_weight
+        self.reversibility_weight = reversibility_weight
+        self.jacobian_weight = jacobian_weight
+        self.momentum_consistency_weight = momentum_consistency_weight
+
+    # --- Assume all your helper compute_* functions exist here ---
+    # e.g., compute_state_norm_loss, compute_energy_conservation_loss,
+    # compute_decorrelation_loss, compute_jacobian_loss, compute_momentum_consistency_loss
+
+    def compute_state_norm_loss(self, hamiltonian_internals):
+        if not self.state_norm_weight > 0: return torch.tensor(0.0)
+        Q_i, P_i, Q_f, P_f = hamiltonian_internals
+        norm_initial = (Q_i.pow(2) + P_i.pow(2)).sum(dim=-1).mean()
+        norm_final = (Q_f.pow(2) + P_f.pow(2)).sum(dim=-1).mean()
+        return F.mse_loss(norm_final, norm_initial.detach())
         
-        # Calculate the individual loss values if their weight is non-zero
-        if self.λ_conserve > 0:
-            loss_conserve = compute_conservation_loss(*ham_internals)
-        if self.λ_decorr > 0:
-            loss_decorr = compute_decorrelation_loss(hidden_state, padding_mask)
-        if self.λ_jacobian > 0:
-            loss_jacobian = compute_jacobian_loss(jac_internals, padding_mask)
-        if self.λ_mom_const > 0:
-            loss_mom_const = compute_momentum_consistency_loss(model, consistency_internals, padding_mask)
+    def compute_energy_conservation_loss(self, energy_internals):
+        # ... (implementation from before) ...
+        if not self.energy_conservation_weight > 0: return torch.tensor(0.0)
+        energies_initial, energies_final = energy_internals
+        if not energies_initial: return torch.tensor(0.0)
+        total_loss = sum(F.mse_loss(h_f, h_i.detach()) for h_i, h_f in zip(energies_initial, energies_final))
+        return total_loss / len(energies_initial)
+
+    def compute_decorrelation_loss(self, hamiltonian_internals):
+        if not self.decorrelation_weight > 0: return torch.tensor(0.0)
+        _, P_i, _, P_f = hamiltonian_internals
+        # Example: Penalize correlation between initial and final momentum
+        P_i_flat = P_i.flatten(1)
+        P_f_flat = P_f.flatten(1)
+        corr = torch.abs(F.cosine_similarity(P_i_flat, P_f_flat, dim=-1)).mean()
+        return corr # We want to minimize correlation, so this works as a loss
+
+    def compute_jacobian_loss(self, jacobian_internals):
+        if not self.jacobian_weight > 0: return torch.tensor(0.0)
+        log_s1, log_s2 = jacobian_internals
+        # The log-determinant of the Jacobian is the sum of the log scaling factors.
+        # We want this to be close to zero for volume preservation.
+        return (log_s1.abs().mean() + log_s2.abs().mean()) / 2
+
+    def compute_momentum_consistency_loss(self, consistency_internals, targets):
+        if not self.momentum_consistency_weight > 0: return torch.tensor(0.0)
         
-        # --- THIS IS THE FIX ---
-        # Combine all losses using out-of-place addition to create a new computation graph
-        total_loss = (loss_nll +
-                      self.λ_conserve * loss_conserve +
-                      self.λ_decorr * loss_decorr +
-                      self.λ_reverse * loss_reverse +
-                      self.λ_jacobian * loss_jacobian +
-                      self.λ_mom_const * loss_mom_const)
-        # --- END OF FIX ---
-            
-        logs = {
-            "nll": loss_nll.item(),
-            "conservation": loss_conserve.item(),
-            "decorrelation": loss_decorr.item(),
-            "reversibility": loss_reverse.item(),
-            "jacobian": loss_jacobian.item(),
-            "mom_const": loss_mom_const.item(),
-            "total": total_loss.item()
+        q_final_pred, p_final_from_inverse = consistency_internals
+        
+        # Create a 2D mask of shape [batch_size, seq_len]
+        # This correctly selects the full embedding vectors where targets == pad_token_id
+        pad_mask = (targets == self.cross_entropy_loss.ignore_index) 
+        
+        # Check if there are any padded elements to avoid division by zero if a batch has no padding
+        if not pad_mask.any():
+            return torch.tensor(0.0, device=p_final_from_inverse.device)
+
+        # Index with the 2D mask. The result is a tensor of shape [num_padded_elements, embed_dim]
+        momentum_at_pad = p_final_from_inverse[pad_mask]
+        
+        # Return the mean absolute value of these momentum components
+        return momentum_at_pad.abs().mean()
+
+    def forward(self, model_outputs, targets):
+        (
+            logits, _, hamiltonian_internals, jacobian_internals, 
+            consistency_internals, reversibility_loss, energy_internals
+        ) = model_outputs
+
+        # 1. Main Language Modeling Loss
+        ce_loss = self.cross_entropy_loss(logits.view(-1, logits.size(-1)), targets.view(-1))
+        
+        # 2. Compute ALL auxiliary losses
+        state_norm_loss = self.compute_state_norm_loss(hamiltonian_internals)
+        energy_cons_loss = self.compute_energy_conservation_loss(energy_internals)
+        decorr_loss = self.compute_decorrelation_loss(hamiltonian_internals)
+        jac_loss = self.compute_jacobian_loss(jacobian_internals)
+        mom_cons_loss = self.compute_momentum_consistency_loss(consistency_internals, targets)
+        
+        # 3. Combine them all with their weights
+        total_loss = (
+            ce_loss +
+            self.state_norm_weight * state_norm_loss +
+            self.energy_conservation_weight * energy_cons_loss +
+            self.reversibility_weight * reversibility_loss +
+            self.decorrelation_weight * decorr_loss +
+            self.jacobian_weight * jac_loss +
+            self.momentum_consistency_weight * mom_cons_loss
+        )
+        
+        # 4. Create the complete dictionary for logging
+        loss_components = {
+            'total_loss': total_loss.item(),
+            'cross_entropy': ce_loss.item(),
+            'state_norm': state_norm_loss.item(),
+            'energy_conservation': energy_cons_loss.item(),
+            'reversibility': reversibility_loss.item(),
+            'decorrelation': decorr_loss.item(),
+            'jacobian': jac_loss.item(),
+            'mom_consistency': mom_cons_loss.item()
         }
         
-        return total_loss, logs
+        return total_loss, loss_components

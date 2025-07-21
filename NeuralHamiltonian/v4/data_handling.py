@@ -74,7 +74,7 @@ def get_stock_data(symbols, start_date, end_date):
             if s in bars_response:
                 # Store as a list of tuples: (time, open, close, high, low)
                 # IMPORTANT: Unpacking o, c, h, l from the datapoint
-                stockdata[s] = [(dp["t"], dp["o"], dp["c"], dp["h"], dp["l"]) for dp in bars_response[s]]
+                stockdata[s] = [(dp["t"], dp["o"], dp["c"], dp["h"], dp["l"], dp["v"]) for dp in bars_response[s]]
             else:
                 print(f"Warning: No data returned for symbol {s} in the given timeframe.")
                 stockdata[s] = [] # Return empty list if no data for a symbol
@@ -143,7 +143,7 @@ def prepare_dataset_from_api(symbols, primary_symbol, years_of_data=10):
         
         # Target window for Y. It starts right after the input window ends.
         y_start_idx = i + seq_len
-        y_window = primary_ohlc[y_start_idx : y_start_idx + seq_len]
+        y_window = primary_ohlc[y_start_idx : y_start_idx + seq_len,:4]
         
         all_X.append(x_window)
         all_Y.append(y_window)

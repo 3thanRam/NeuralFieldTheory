@@ -25,6 +25,8 @@ def get_model(model_type):
             output_dim=config["output_dim"],
             sequence_length=config["sequence_length"],
             timestep=config["timestep"],
+            num_subspaces=config["num_subspaces"],
+            subspace_dim=config["subspace_dim"],
         )
     elif model_type == "transformer":
         print("Initializing TransformerModel with shared parameters...")

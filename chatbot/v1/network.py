@@ -363,7 +363,7 @@ class HamiltonianModel(nn.Module):
     
     def __init__(self, num_blocks: int, input_dim: int, d_embedding: int, d_hidden_dim: int, 
                  output_dim: int, vocab_size: int, embed_dim: int, pad_idx: int, 
-                 timestep: float = 0.1, dropout: float = 0.1, **kwargs):
+                 timestep: float = 0.1, dropout: float = 0.1,momentum_noise_sigma:float=0.1 ,**kwargs):
         super().__init__()
         
         # Model parameters
@@ -379,7 +379,7 @@ class HamiltonianModel(nn.Module):
         # Learnable parameters
         self.q_shift = nn.Parameter(torch.zeros(d_embedding))
         self.dropout = nn.Dropout(dropout)
-        
+        self.momentum_noise_sigma=momentum_noise_sigma
         # Improved momentum network
         self.momentum_net = nn.Sequential(
             nn.Linear(2 * d_embedding, d_hidden_dim),
@@ -484,57 +484,76 @@ class HamiltonianModel(nn.Module):
         
         return q_final.detach(), p_final.detach(), reversibility_loss
 
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None, 
-                return_internals: bool = False):
-        """Improved forward pass with better error handling"""
-        
-        # Embedding and initial processing
+    def forward(self, x: torch.Tensor, mask: torch.Tensor = None, return_internals: bool = False):
+        # --- Initial setup is the same ---
         embedded_x = self.token_embedding(x)
         q_initial_proj = self.pos_encoder(self.input_projection(embedded_x))
         q_initial = self.dropout(q_initial_proj + self.q_shift)
-        
-        # Momentum initialization
         dq = torch.zeros_like(q_initial)
-        if q_initial.size(1) > 1:
-            dq[:, 1:, :] = q_initial[:, 1:, :] - q_initial[:, :-1, :]
-        
+        dq[:, 1:, :] = q_initial[:, 1:, :] - q_initial[:, :-1, :]
         momentum_net_input = torch.cat([q_initial, dq], dim=-1)
         p_initial = self.momentum_net(momentum_net_input)
         
-        # Apply transforms
         q_rot, p_rot = self.frft_transform(q_initial, p_initial)
         
         q_norm = self.q_norm_for_transform(q_rot)
         p_norm = self.p_norm_for_transform(p_rot)
         Q_initial, P_initial, log_s1, log_s2 = self.coord_transform(q_norm, p_norm)
         
-        # Hamiltonian evolution
         Q, P = Q_initial, P_initial
         total_reversibility_loss = 0.0
         
+        # --- START OF REFACTORING ---
+        # Create lists to store energies for the conservation loss
+        energies_initial = []
+        energies_final = []
+        
         for block in self.blocks:
-            Q, P, local_rev_loss = self.leapfrog_update(Q, P, block, self.timestep)
+            # 1. Calculate energy BEFORE the leapfrog step
+            # This requires calling the block's forward pass.
+            if return_internals: # Only compute if needed for the loss
+                H_i = block(Q, P)
+                energies_initial.append(H_i)
+
+            # 2. Perform the leapfrog update as before
+            Q_new, P_new, local_rev_loss = self.leapfrog_update(Q, P, block, timestep=self.timestep)
             total_reversibility_loss += local_rev_loss
+
+            # 3. Calculate energy AFTER the leapfrog step
+            if return_internals:
+                H_f = block(Q_new, P_new)
+                energies_final.append(H_f)
+            
+            # 4. Update state for the next block
+            Q, P = Q_new, P_new
         
-        # Average reversibility loss
-        if self.num_blocks > 0:
-            total_reversibility_loss = total_reversibility_loss / self.num_blocks
+        total_reversibility_loss = total_reversibility_loss / self.num_blocks if self.num_blocks > 0 else 0.0
+
+        Q_final, P_final = Q, P
         
-        # Inverse transforms
-        q_transformed_final, p_transformed_final = self.coord_transform.inverse(Q, P)
+        # --- Final part is the same ---
+        q_transformed_final, p_transformed_final = self.coord_transform.inverse(Q_final, P_final)
         q_final, p_final_from_inverse = self.frft_transform.inverse(q_transformed_final, p_transformed_final)
-        
-        # Output computation with residual connection
         hidden_state = self.norm(q_final + q_initial)
         logits = self.lm_head(hidden_state)
         
-        # Return results in the format expected by your training code
         if return_internals:
-            hamiltonian_internals = (Q_initial, P_initial, Q, P)
+            hamiltonian_internals = (Q_initial, P_initial, Q_final, P_final)
             jacobian_internals = (log_s1, log_s2)
             consistency_internals = (q_final, p_final_from_inverse)
             
-            return logits, hidden_state, hamiltonian_internals, jacobian_internals, consistency_internals, total_reversibility_loss
+            # --- Pass out the collected energies ---
+            energy_internals = (energies_initial, energies_final)
+            
+            return (
+                logits, 
+                hidden_state, 
+                hamiltonian_internals, 
+                jacobian_internals, 
+                consistency_internals, 
+                total_reversibility_loss,
+                energy_internals  # The new return value
+            )
         else:
             return logits
 

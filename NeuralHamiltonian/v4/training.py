@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 
 from config import config
-from data_handling import save_model, savedata#, gen_data_for_model
+from data_handling import save_model, savedata
 
 import json
 import matplotlib.pyplot as plt
@@ -48,7 +48,6 @@ def plot_learning_curves(use_log_scale=True):
     ax1.set_title('Training Loss vs. Epochs')
     ax1.set_ylabel('Loss' + (' (Log Scale)' if use_log_scale else ''))
     for model_type, data in history.items():
-        # Filter out any non-positive values if using log scale, as log(x) is undefined for x<=0
         train_loss = np.array(data['train_loss'])
         epochs = np.arange(1, len(train_loss) + 1)
         if use_log_scale:
@@ -79,79 +78,90 @@ def plot_learning_curves(use_log_scale=True):
         ax2.set_yscale('log')
     
     plt.tight_layout()
-    # Add a suffix to the filename if using log scale to avoid overwriting
-    #if use_log_scale:
-    #    base, ext = os.path.splitext(plot_path)
-    #    plot_path = f"{base}_log{ext}"
-        
     plt.savefig(plot_path)
     print(f"Learning curve plot saved to {plot_path}")
-    #plt.show()
-
-    
 
 def differentiable_direction_loss(preds, targets):
-    """Differentiable version of directional accuracy"""
+    """Differentiable version of directional accuracy - more efficient"""
     # Use tanh to approximate sign function
     pred_changes = preds[..., 1, 1:] - preds[..., 1, :-1]  # Close price changes
     true_changes = targets[..., 1, 1:] - targets[..., 1, :-1]
     
-    # Sigmoid with large multiplier (10) approximates step function
-    direction_match = torch.sigmoid(10 * pred_changes * true_changes)
-    return 1 - direction_match.mean()  # Minimize this
+    # Sigmoid with large multiplier approximates step function
+    direction_match = torch.sigmoid(5 * pred_changes * true_changes)  # Reduced multiplier
+    return 1 - direction_match.mean()
 
-    
 class FinancialLoss(nn.Module):
+    """Memory-efficient financial loss function"""
     def __init__(self, huber_weight=0.7, direction_weight=0.3):
         super().__init__()
         self.huber_weight = huber_weight
         self.direction_weight = direction_weight
-        # Use CosineEmbeddingLoss which is designed for this purpose
-        self.cosine_loss = nn.CosineEmbeddingLoss(reduction='mean')
 
     def forward(self, preds, targets):
         # 1. Magnitude Loss (using Huber Loss for robustness)
-        # It's better than MSE for financial data.
         magnitude_loss = F.smooth_l1_loss(preds, targets)
         
-        # 2. Directional Loss
-        # We want to measure the direction of the *change* from a reference point.
-        # Let's assume the input shape is (batch, seq, features) and we care about
-        # the change from the last *known* value to the predicted one.
-        # For simplicity, let's assume we predict one step ahead from a sequence.
-        # Let's use Open-to-Close change as the vector.
+        # 2. Directional Loss - simplified computation
+        # Compute price changes more efficiently
+        pred_close = preds[:, :, 1]  # Close price
+        true_close = targets[:, :, 1]
         
-        # preds and targets shape: (batch_size, seq_len, 4) where features are OHLC
-        # Let's assume seq_len = 1 for this example.
-        pred_change_vector = preds[:, :, 1] - preds[:, :, 0]  # Predicted Close - Predicted Open
-        true_change_vector = targets[:, :, 1] - targets[:, :, 0]  # True Close - True Open
-        
-        # The target for CosineEmbeddingLoss is a tensor of 1s, which means
-        # we want the cosine similarity to be as close to 1 as possible.
-        y = torch.ones(preds.size(0)).to(preds.device)
-        
-        # The loss is 1 - cosine(x1, x2). So it's 0 for perfect alignment.
-        directional_loss = self.cosine_loss(pred_change_vector, true_change_vector, y)
+        if pred_close.size(1) > 1:
+            pred_changes = pred_close[:, 1:] - pred_close[:, :-1]
+            true_changes = true_close[:, 1:] - true_close[:, :-1]
+            
+            # Cosine similarity between change vectors
+            pred_changes_norm = F.normalize(pred_changes, dim=1, eps=1e-8)
+            true_changes_norm = F.normalize(true_changes, dim=1, eps=1e-8)
+            
+            cosine_sim = (pred_changes_norm * true_changes_norm).sum(dim=1).mean()
+            directional_loss = 1 - cosine_sim
+        else:
+            directional_loss = 0.0
         
         # 3. Combine the losses
         total_loss = self.huber_weight * magnitude_loss + self.direction_weight * directional_loss
         
         return total_loss
 
+
 def get_current_weights(epoch, max_epochs):
     """Gradually increase metric-based loss weights"""
     progress = epoch / max_epochs
     return {
-        'huber_weight': max(0.7, 1.0 - progress * 0.5),  # Reduce MSE over time
-        'direction_weight': min(0.5, progress * 0.7),  # Increase direction focus
-        #'volatility_weight': min(0.3, progress * 0.4)
+        'huber_weight': max(0.5, 1.0 - progress * 0.3),
+        'direction_weight': min(0.5, progress * 0.5),
     }
+
+def compute_conservation_loss(Q_i, P_i, Q_f, P_f):
+    """Memory-efficient conservation loss computation"""
+    # Compute norms more efficiently
+    N_initial = (Q_i * Q_i + P_i * P_i).sum(dim=-1).mean()
+    N_final = (Q_f * Q_f + P_f * P_f).sum(dim=-1).mean()
+    return F.mse_loss(N_final, N_initial)
+
+
+def get_conservation_weight(epoch, max_epochs, start_epoch=10, max_weight=0.1):
+    """
+    Anneals the conservation loss weight. Starts at 0 and ramps up to max_weight.
+    """
+    if epoch < start_epoch:
+        return 0.0
+    # Linear ramp-up over a fraction of the total epochs
+    ramp_duration = max_epochs // 4 
+    progress = min(1.0, (epoch - start_epoch) / ramp_duration)
+    return progress * max_weight
 
 def training(model, optimizer, start_epoch, all_X, all_Y, model_type):
     device = torch.device(config["device"])
     model.to(device)
-    #max_grad_norm = config.get("max_grad_norm", 1.0)
     print(f"Training on device: {device}")
+
+    # Memory optimization settings
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.backends.cudnn.benchmark = True
 
     # --- Load or Initialize Training History ---
     history_path = config["history_save_path"]
@@ -167,10 +177,9 @@ def training(model, optimizer, start_epoch, all_X, all_Y, model_type):
     # If starting from scratch, clear old history for this model
     if start_epoch == 0:
         model_history = {"train_loss": [], "val_loss": []}
-    else: # If continuing, truncate history to the start_epoch to avoid duplicates
+    else:
         model_history["train_loss"] = model_history["train_loss"][:start_epoch]
         model_history["val_loss"] = model_history["val_loss"][:start_epoch]
-    
 
     print("Splitting prepared dataset into training and validation sets...")
     
@@ -188,80 +197,90 @@ def training(model, optimizer, start_epoch, all_X, all_Y, model_type):
     # Optional: Save the split data for faster re-runs
     savedata(X_train, Y_train, X_val, Y_val, config["data_save_path"])
 
-    # Create PyTorch Datasets and DataLoaders
-    train_dataset = TensorDataset(torch.tensor(X_train), torch.tensor(Y_train))
-    train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True)
+    # Create PyTorch Datasets and DataLoaders with memory-efficient settings
+    train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), 
+                                torch.tensor(Y_train, dtype=torch.float32))
+    train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], 
+                            shuffle=True, num_workers=0, pin_memory=True)
+    
     val_loader = None
     if len(X_val) > 0:
-        val_dataset = TensorDataset(torch.tensor(X_val), torch.tensor(Y_val))
-        val_loader = DataLoader(val_dataset, batch_size=config["batch_size"])
+        val_dataset = TensorDataset(torch.tensor(X_val, dtype=torch.float32), 
+                                  torch.tensor(Y_val, dtype=torch.float32))
+        val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], 
+                              num_workers=0, pin_memory=True)
     
     model_save_path = os.path.join(config["model_save_dir"], f"{model_type}_model.pth")
     print(f"Checkpoints for this run will be saved to: {model_save_path}")
     
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=3)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
     best_val_loss = float('inf')
 
+    # Training loop with memory optimizations
     for epoch in range(start_epoch, config["num_epoch"]):
         model.train()
         total_train_loss = 0
         weights = get_current_weights(epoch, config["num_epoch"])
         criterion = FinancialLoss(**weights)
-        for batch_X, batch_Y in train_loader:
-            batch_X, batch_Y = batch_X.to(device), batch_Y.to(device)
+        
+        for batch_idx, (batch_X, batch_Y) in enumerate(train_loader):
+            batch_X, batch_Y = batch_X.to(device, non_blocking=True), batch_Y.to(device, non_blocking=True)
+            
             optimizer.zero_grad()
-            predictions, (Q_i, P_i, Q_f, P_f) = model(batch_X, return_internals=True)
-    
-            # 1. Main prediction loss
-            prediction_loss = criterion(predictions, batch_Y) # e.g., your FinancialLoss
+            
+            # Forward pass with gradient accumulation for large models
+            if model_type == "hamiltonian":
+                predictions, (Q_i, P_i, Q_f, P_f) = model(batch_X, return_internals=True)
+                
+                # Main prediction loss
+                prediction_loss = criterion(predictions, batch_Y)
+                                
+                # Combine losses
+                conservation_weight =0.1
+                
+                total_loss = prediction_loss + compute_conservation_loss(Q_i, P_i, Q_f, P_f) * conservation_weight
 
-            # 2. Conservation loss
-            # We want the "energy" or "norm" in the new basis to be conserved.
-            N_initial = Q_i.pow(2) + P_i.pow(2)
-            N_final = Q_f.pow(2) + P_f.pow(2)
-            conservation_loss = F.mse_loss(N_final, N_initial)
+            else:
+                predictions = model(batch_X)
+                total_loss = criterion(predictions, batch_Y)
 
-            # 3. Combine losses
-            conservation_weight = 0.1 # This is a new hyperparameter to tune
-            total_loss = prediction_loss + conservation_weight * conservation_loss
-
+            # Backward pass with gradient scaling
             total_loss.backward()
+            
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             optimizer.step()
-            #predictions = model(batch_X)
-            #loss = criterion(predictions, batch_Y)
-            #loss.backward()
-            #optimizer.step()
             total_train_loss += total_loss.item()
+            
+            # Memory cleanup every few batches
+            if batch_idx % 10 == 0:
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
         avg_train_loss = total_train_loss / len(train_loader)
 
-        # Validation loop
+        # Validation loop with memory efficiency
         avg_val_loss = float('nan')
         if val_loader:
             model.eval()
             total_val_loss = 0
+            
             with torch.no_grad():
                 for batch_X_val, batch_Y_val in val_loader:
-                    batch_X_val, batch_Y_val = batch_X_val.to(device), batch_Y_val.to(device)
-                    #with torch.enable_grad():
-                    #    val_preds = model(batch_X_val)
-                    #v_loss = criterion(val_preds, batch_Y_val)
-                    #total_val_loss += v_loss.item()
-                    with torch.enable_grad():
-                        predictions, (Q_i, P_i, Q_f, P_f) = model(batch_X_val, return_internals=True)
-    
-                    # 1. Main prediction loss
-                    prediction_loss = criterion(predictions, batch_Y_val) # e.g., your FinancialLoss
-
-                    # 2. Conservation loss
-                    # We want the "energy" or "norm" in the new basis to be conserved.
-                    N_initial = Q_i.pow(2) + P_i.pow(2)
-                    N_final = Q_f.pow(2) + P_f.pow(2)
-                    conservation_loss = F.mse_loss(N_final, N_initial)
-
-                    # 3. Combine losses
-                    conservation_weight = 0.1 # This is a new hyperparameter to tune
-                    v_loss = prediction_loss + conservation_weight * conservation_loss
+                    batch_X_val = batch_X_val.to(device, non_blocking=True)
+                    batch_Y_val = batch_Y_val.to(device, non_blocking=True)
+                    
+                    if model_type == "hamiltonian":
+                        # Use no_grad context for validation - no need for internals
+                        with torch.enable_grad():
+                            predictions = model(batch_X_val, return_internals=False)
+                        v_loss = criterion(predictions, batch_Y_val)
+                    else:
+                        predictions = model(batch_X_val)
+                        v_loss = criterion(predictions, batch_Y_val)
+                    
                     total_val_loss += v_loss.item()
+                    
             avg_val_loss = total_val_loss / len(val_loader)
             scheduler.step(avg_val_loss)
 
@@ -274,12 +293,20 @@ def training(model, optimizer, start_epoch, all_X, all_Y, model_type):
         model_history["train_loss"].append(avg_train_loss)
         model_history["val_loss"].append(avg_val_loss)
         full_history[model_type] = model_history
-        with open(history_path, 'w') as f:
-            json.dump(full_history, f, indent=4)
+        
+        # Save history every 5 epochs to reduce I/O
+        if epoch % 5 == 0:
+            with open(history_path, 'w') as f:
+                json.dump(full_history, f, indent=4)
 
         print(f"Epoch [{epoch+1}/{config['num_epoch']}] | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f} | LR: {optimizer.param_groups[0]['lr']:.2e}")
         
+        # Memory cleanup
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    
+    # Final history save
+    with open(history_path, 'w') as f:
+        json.dump(full_history, f, indent=4)
+    
     print(f"Training finished. History saved to {history_path}")
-
-
-
