@@ -69,6 +69,24 @@ class ForceDecorrelationLoss(nn.Module):
             total_similarity += F.cosine_similarity(f_flat, g_flat, dim=-1, eps=1e-8).abs().mean()
         return total_similarity / len(forces_f)
 
+
+class RoundTripLoss(nn.Module):
+    def __init__(self, **kwargs):
+        super().__init__()
+    def forward(self, predictions, targets, internals):
+        return internals.get('round_trip_loss', torch.tensor(0.))
+
+class EnergyRatioLoss(nn.Module):
+    def __init__(self, **kwargs):
+        super().__init__()
+    def forward(self, predictions, targets, internals):
+        final_q_dot = internals.get('final_q_dot')
+        forces_f = internals.get('forces_f', [])
+        if final_q_dot is None or not forces_f: return torch.tensor(0.)
+        kinetic_energy = 0.5 * final_q_dot.pow(2).mean()
+        potential_energy = forces_f[-1].pow(2).mean()
+        return (kinetic_energy - potential_energy).pow(2)
+
 # --- A simple factory to get loss instances by name ---
 def get_loss_fn(name, **kwargs):
     if name == 'chatbot_base':
@@ -81,4 +99,8 @@ def get_loss_fn(name, **kwargs):
         return ForceMinimizationLoss(**kwargs)
     if name == 'force_decorrelation':
         return ForceDecorrelationLoss(**kwargs)
+    if name == 'round_trip':
+        return RoundTripLoss(**kwargs)
+    if name == 'energy_ratio':
+        return EnergyRatioLoss(**kwargs)
     raise ValueError(f"Unknown loss function: {name}")

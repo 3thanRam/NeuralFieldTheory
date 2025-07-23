@@ -60,12 +60,14 @@ TASK_CONFIG = {
     "loss_config": {
         # The base loss should always have a weight of 1.0
         "stockbot_base": 1.0,
-        # "chatbot_base": 1.0, 
+        "chatbot_base": 0., 
         
         # Auxiliary losses can be added, removed, or have their weights changed
         "norm_constraint": 0.1,
         "force_minimization": 1.,
-        "force_decorrelation": 1.
+        "force_decorrelation": 1.,
+        "round_trip": 1.,
+        "energy_ratio": 1.
     },
 }
 TASK_CONFIG["num_input_features"]=len(TASK_CONFIG["symbols"]) * 5,
