@@ -11,23 +11,36 @@ from types import SimpleNamespace
 
 def _run_stockbot_test(config, model, val_loader):
     """ Runs the autoregressive prediction test and plots the result. """
-    
     full_sequence, _ = next(iter(val_loader))
-    hist_len, pred_len = 40, 20
+    
+    hist_len = config.test_history_length
+    pred_len = config.test_prediction_length
+    
+    # Check if the data loader's sequence length is sufficient for the test
     if full_sequence.shape[1] < hist_len + pred_len:
-        raise ValueError(f"Sequence from DataLoader is too short for test.")
+        raise ValueError(
+            f"DataLoader sequence_length ({full_sequence.shape[1]}) is too short for the test. "
+            f"It must be at least test_history_length + test_prediction_length ({hist_len + pred_len})."
+        )
     
-    initial_sequence = full_sequence[0:1, :hist_len, :]
-    ground_truth = full_sequence[0, hist_len:hist_len + pred_len, :]
+    history_and_truth_period = full_sequence[0, :hist_len + pred_len, :]
+
+    history_for_plot = history_and_truth_period[:hist_len, :]
     
-    predictions = model.generate(initial_sequence, max_new_tokens=pred_len)
+    ground_truth = history_and_truth_period[hist_len:, :]
     
-    os.makedirs(os.path.join(config.project_directory,"test_result"), exist_ok=True)
+    initial_sequence_for_model = history_for_plot[None, -config.sequence_length:, :]
+
+    
+    # Generate predictions
+    predictions = model.generate(initial_sequence_for_model, max_new_tokens=pred_len)
+    
+    os.makedirs( os.path.join( config.project_directory,"test_results"), exist_ok=True)
     _plot_candlestick_comparison(
-        initial_sequence.squeeze(0).cpu().numpy(),
+        history_for_plot.cpu().numpy(),
         ground_truth.cpu().numpy(),
         predictions.cpu().numpy(),
-         os.path.join(config.project_directory,"test_result","stock_comparison_plot.png"),
+        os.path.join( config.project_directory,"test_results", "stock_comparison_plot.png"),
         config
     )
 
@@ -53,6 +66,6 @@ def _plot_candlestick_comparison(history, ground_truth, predictions, save_path, 
     labels = ['True Up','True Down','Pred Up','Pred Down']
     ax.legend(handles, labels)
     ax.axvline(x=hist_len - 0.5, color='k', linestyle='--')
-    ax.set_title(f"Stock Price Prediction for {config.primary_symbol}: History vs. Ground Truth")
+    ax.set_title(f"Stock Price Prediction for {config.primary_symbol}: Truth vs Prediction")
     ax.set_ylabel('Price ($)'); ax.set_xlabel('Time (Days)'); ax.grid(True, alpha=0.3)
     plt.tight_layout(); plt.savefig(save_path); plt.close(fig); print("Plot saved.")

@@ -9,7 +9,7 @@ class PotentialBlock(nn.Module):
     The SLOW, autograd-based force calculator from a single scalar potential.
     This is the non-parallel alternative to ParallelForceBlock.
     """
-    def __init__(self, embed_dim, hidden_dim, **kwargs): # Added **kwargs for compatibility
+    def __init__(self, embed_dim, hidden_dim, **kwargs): 
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(embed_dim, hidden_dim),
@@ -23,17 +23,11 @@ class PotentialBlock(nn.Module):
     
     def get_force(self, q):
         """ Calculates the force F = -∇V using automatic differentiation. """
-        # This method is called when parallel_force=False.
-        with torch.enable_grad():
-            # Q must be a leaf or have create_graph=True from its creator.
-            # To be safe, we always enable grad and set it on the tensor.
-            q.requires_grad_(True)
-            V = self.forward(q)
-            force = -torch.autograd.grad(
-                V, q,
-                grad_outputs=torch.ones_like(V),
-                create_graph=True
-            )[0]
+        # method called when parallel_force=False
+        if not q.requires_grad:
+            q = q.requires_grad_(True)
+        V = self.forward(q)
+        force = -torch.autograd.grad(V, q, grad_outputs=torch.ones_like(V), create_graph=True)[0]
         return force
 
 # --- The LNN class, now complete ---
@@ -48,11 +42,18 @@ class LNN(nn.Module):
         self.pos_encoder = PositionalEncoding(embed_dim)
         self.dropout = nn.Dropout(kwargs.get('dropout', 0.1))
         self.q_shift = nn.Parameter(torch.zeros(embed_dim))
-        self.coord_transform = LearnableFrFT()
+        self.coord_transform = LearnableFrFT(embed_dim)
         self.final_norm = nn.LayerNorm(embed_dim)
 
         # --- Dynamically Build Force Blocks ---
-        ForceBlock = ParallelForceBlock if self.parallel_force else PotentialBlock
+        kernel_size = kwargs.get('kernel_size', 3) 
+
+        # --- Dynamically Build Force Blocks ---
+        if self.parallel_force:
+            # Pass kernel_size to the constructor
+            ForceBlock = lambda dim, d_hidden_dim: ParallelForceBlock(dim, d_hidden_dim, kernel_size=kernel_size)
+        else:
+            ForceBlock = lambda dim, d_hidden_dim: PotentialBlock(dim, d_hidden_dim)
         
         # Pass hidden_dim to the block constructors
         if self.reversible:
@@ -75,9 +76,11 @@ class LNN(nn.Module):
         internals = {'forces_f': [], 'forces_g': [], 'round_trip_loss': []}
         for f_block, g_block in zip(self.F_blocks, self.G_blocks):
             accel_f = self._get_force(f_block, q2)
-            q_dot1 = q_dot1 + accel_f * self.dt
-            q1 = q1 + q_dot1 * self.dt
+            q_dot1_half = q_dot1 + 0.5 * accel_f * self.dt
+            q1 = q1 + q_dot1_half * self.dt
+
             accel_g = self._get_force(g_block, q1)
+            q_dot1 = q_dot1_half + 0.5 * accel_f * self.dt  
             q_dot2 = q_dot2 + accel_g * self.dt
             q2 = q2 + q_dot2 * self.dt
             if return_internals:
@@ -101,7 +104,7 @@ class LNN(nn.Module):
             Q = Q + Q_dot * self.dt + 0.5 * acceleration * (self.dt ** 2)
             next_acceleration = self._get_force(g_block, Q)
             Q_dot = Q_dot + 0.5 * (acceleration + next_acceleration) * self.dt
-            if return_internals: internals['forces_g'].append(next_acceleration) # Use next_accel for g
+            if return_internals: internals['forces_g'].append(next_acceleration) 
         return Q, Q_dot, internals
 
     def forward(self, initial_vectors, return_internals=False):

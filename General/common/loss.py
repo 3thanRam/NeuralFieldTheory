@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# --- Base (Task-Specific) Losses ---
 
 class ChatbotBaseLoss(nn.Module):
     def __init__(self, **kwargs):
@@ -87,7 +86,6 @@ class EnergyRatioLoss(nn.Module):
         potential_energy = forces_f[-1].pow(2).mean()
         return (kinetic_energy - potential_energy).pow(2)
 
-# --- A simple factory to get loss instances by name ---
 def get_loss_fn(name, **kwargs):
     if name == 'chatbot_base':
         return ChatbotBaseLoss(**kwargs)

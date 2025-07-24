@@ -51,7 +51,6 @@ except (ImportError, ValueError) as e:
     print(f"Warning: Alpaca setup failed. Real data fetching is disabled. Error: {e}")
     ALPACA_AVAILABLE = False
 
-# --- Chatbot Data Loader ---
 def prepare_chatbot_loaders(config):
     """
     Prepares the tokenizer and data loaders for the NLP task.
@@ -86,7 +85,6 @@ def prepare_chatbot_loaders(config):
     
     return train_loader, val_loader, tokenizer
 
-# --- Stockbot Data Loader ---
 def _get_stock_data(symbols, start_date, end_date):
     """ Internal helper function to fetch raw data from Alpaca API. """
     if not isinstance(symbols, list):

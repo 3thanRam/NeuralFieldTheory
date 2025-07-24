@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from common.modules.base_modules import DynamicNorm,LearnableFrFT
+from common.modules.base_modules import DynamicNorm
 
 
 
@@ -37,16 +37,13 @@ class BaseModel(nn.Module):
             x, norm_mean, norm_std = self.normalizer.forward(x)
         initial_vectors = self.input_head(x)
 
-        # 3. Run core dynamics
         if return_internals:
             final_state, internals = self.core(initial_vectors, return_internals=True)
         else:
             final_state = self.core(initial_vectors, return_internals=False)
 
-        # 4. Project to output space
         predictions = self.output_head(final_state)
 
-        # 5. Un-normalize if necessary
         if self.normalizer:
             predictions = self.normalizer.inverse(predictions, norm_mean, norm_std)
         
@@ -56,8 +53,6 @@ class BaseModel(nn.Module):
 
     @torch.no_grad()
     def generate(self, start_input, max_new_tokens, **kwargs):
-        # This method is now compatible with the new parallel forward pass
-        # The logic within remains the same.
         self.eval()
         device = next(self.parameters()).device
 

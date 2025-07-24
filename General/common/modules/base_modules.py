@@ -30,17 +30,35 @@ class DynamicNorm(nn.Module):
         return x_norm * (std + self.eps) + mean
 
 class LearnableFrFT(nn.Module):
-    def __init__(self):
+    def __init__(self, embed_dim):
         super().__init__()
-        self.alpha = nn.Parameter(torch.randn(1) * 0.01)
+        # Use separate parameters for each dimension
+        self.alpha = nn.Parameter(torch.randn(embed_dim // 2) * 0.01)
 
     def forward(self, q, p):
+        # Split into pairs and apply rotation per pair
+        q_pairs = q.view(*q.shape[:-1], -1, 2)
+        p_pairs = p.view(*p.shape[:-1], -1, 2)
+        
         c, s = torch.cos(self.alpha), torch.sin(self.alpha)
-        return q * c + p * s, -q * s + p * c
-
+        c, s = c.unsqueeze(0).unsqueeze(0), s.unsqueeze(0).unsqueeze(0)
+        
+        q_rot = q_pairs * c.unsqueeze(-1) + p_pairs * s.unsqueeze(-1)
+        p_rot = -q_pairs * s.unsqueeze(-1) + p_pairs * c.unsqueeze(-1)
+        
+        return q_rot.flatten(-2), p_rot.flatten(-2)
     def inverse(self, q, p):
-        c, s = torch.cos(self.alpha), torch.sin(self.alpha)
-        return q * c - p * s, q * s + p * c
+        # Split into pairs and apply rotation per pair
+        q_pairs = q.view(*q.shape[:-1], -1, 2)
+        p_pairs = p.view(*p.shape[:-1], -1, 2)
+        
+        c, s = torch.cos(self.alpha), -torch.sin(self.alpha)
+        c, s = c.unsqueeze(0).unsqueeze(0), s.unsqueeze(0).unsqueeze(0)
+        
+        q_rot = q_pairs * c.unsqueeze(-1) + p_pairs * s.unsqueeze(-1)
+        p_rot = -q_pairs * s.unsqueeze(-1) + p_pairs * c.unsqueeze(-1)
+        
+        return q_rot.flatten(-2), p_rot.flatten(-2)
 
 class ParallelForceBlock(nn.Module):
     def __init__(self, embed_dim, hidden_dim, kernel_size=3):
@@ -50,11 +68,21 @@ class ParallelForceBlock(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_dim, embed_dim)
         )
+        #self.force_conv = nn.Conv1d(
+        #    in_channels=embed_dim,
+        #    out_channels=embed_dim,
+        #    kernel_size=kernel_size,
+        #    padding=(kernel_size - 1) // 2,
+        #    groups=embed_dim # Now this is always correct
+        #)
         self.force_conv = nn.Conv1d(
-            embed_dim, embed_dim, kernel_size,
+            in_channels=embed_dim,
+            out_channels=embed_dim,
+            kernel_size=kernel_size,
             padding=(kernel_size - 1) // 2,
-            groups=embed_dim
+            groups=min(embed_dim // 4, 32)
         )
+
 
     def forward(self, q):
         potential_field = self.potential_mlp(q)

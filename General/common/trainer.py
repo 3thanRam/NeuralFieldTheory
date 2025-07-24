@@ -1,4 +1,4 @@
-# common/trainer.py - Contains the generic training loop.
+# common/trainer.py 
 import torch
 import os
 from tqdm.auto import tqdm
@@ -20,7 +20,6 @@ def epoch_loop(config, model, loss_functions, optimizer, scheduler, train_loader
             model_outputs = model(batch_X, return_internals=True)
             predictions, internals = model_outputs
 
-            # --- NEW: Modular Loss Calculation ---
             total_loss = 0
             loss_components = {}
             for name, weight, fn in loss_functions:
@@ -30,16 +29,14 @@ def epoch_loop(config, model, loss_functions, optimizer, scheduler, train_loader
                     loss_components[name] = loss_val.item()
 
             loss_components['total'] = total_loss.item()
-            #model_outputs = model(batch_X, return_internals=True)
-            #loss, loss_components = criterion(model_outputs, batch_Y)
-            #
+
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            #
+            
             total_train_loss += total_loss.item()
             train_iterator.set_postfix({'loss': f"{total_loss.item():.4f}"})
-            #
+            
             if (i + 1) % log_interval == 0:
                 log_str = " | ".join([f"{k.capitalize()}:{v:.3f}" for k, v in loss_components.items()])
                 train_iterator.write(log_str)
@@ -71,9 +68,7 @@ def epoch_loop(config, model, loss_functions, optimizer, scheduler, train_loader
                         if weight > 0:
                             val_loss += weight * fn(outputs_val[0], batch_Y_val, outputs_val[1])
                     total_val_loss += val_loss.item()
-                    #loss_val, _ = criterion(outputs_val, batch_Y_val)
-                    total_val_loss += loss_val.item()
-                    val_iterator.set_postfix({'loss': f"{loss_val.item():.4f}"})
+                    val_iterator.set_postfix({'loss': f"{val_loss.item():.4f}"})
         except KeyboardInterrupt:
             print("\nValidation interrupted by user.")
             stop_training = True
