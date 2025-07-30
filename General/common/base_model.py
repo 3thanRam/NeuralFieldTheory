@@ -1,26 +1,22 @@
-#base_model.py
+# common/base_model.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from common.modules.base_modules import DynamicNorm
-
-
-
-
+from .modules.base_modules import ReturnNorm # We only need ReturnNorm
 
 class BaseModel(nn.Module):
-    """ A single, universal model that handles different tasks and normalization. """
-    def __init__(self,**kwargs):
+    def __init__(self, core_network, config):
         super().__init__()
-        config=kwargs['config']
+        self.config = config
+        self.core = core_network
         
-        self.use_normalization=config['use_normalization']
-        self.use_tokenization=config['use_tokenization']
+        self.use_tokenization = config.get('use_tokenization', False)
+        self.use_normalization = config.get('use_normalization', False) # This is for the 'returns' transform
         
         if self.use_normalization:
-            self.normalizer = DynamicNorm()
+            self.normalizer = ReturnNorm()
         else:
-            self.normalizer =None
+            self.normalizer = None
         
         if self.use_tokenization:
             self.input_head = nn.Embedding(config['vocab_size'], config['embed_dim'], padding_idx=config['pad_idx'])
@@ -28,34 +24,34 @@ class BaseModel(nn.Module):
         else:
             self.input_head = nn.Linear(config['num_input_features'], config['embed_dim'])
             self.output_head = nn.Linear(config['embed_dim'], config['num_output_predictions'])
-            
-        
-        self.core = kwargs['core_network']
 
     def forward(self, x, return_internals=False):
-        if self.normalizer:
-            x, norm_mean, norm_std = self.normalizer.forward(x)
-        initial_vectors = self.input_head(x)
+        # The input `x` is always raw data (prices or token IDs)
+        
+        if self.use_normalization:
+            # For stocks, convert raw prices to returns. The model core sees returns.
+            x_norm, _ = self.normalizer.forward(x) # We don't need the stats for training
+            initial_vectors = self.input_head(x_norm)
+        else: # For NLP
+            initial_vectors = self.input_head(x)
 
         if return_internals:
             final_state, internals = self.core(initial_vectors, return_internals=True)
         else:
             final_state = self.core(initial_vectors, return_internals=False)
 
-        predictions = self.output_head(final_state)
-
-        if self.normalizer:
-            predictions = self.normalizer.inverse(predictions, norm_mean, norm_std)
+        # The model's final output is ALWAYS in the normalized space
+        # For stocks, this means it predicts returns.
+        predictions_norm = self.output_head(final_state)
         
         if return_internals:
-            return predictions, internals
-        return predictions
+            return predictions_norm, internals
+        return predictions_norm
 
     @torch.no_grad()
     def generate(self, start_input, max_new_tokens, **kwargs):
         self.eval()
         device = next(self.parameters()).device
-
         
         if self.use_tokenization:
             tokenizer = kwargs.get('tokenizer')
@@ -78,12 +74,27 @@ class BaseModel(nn.Module):
                     break
             
             return tokenizer.decode(ids[0], skip_special_tokens=True)
-        
-        else:
-            current_sequence = start_input.clone().to(device)
-            predicted_steps = []
+        else: # Timeseries
+            # This loop now correctly handles the raw price -> return -> raw price conversion
+            current_sequence_raw = start_input.clone().to(device)
+            predicted_prices_list = []
+            
             for _ in range(max_new_tokens):
-                next_step_prediction = self.forward(current_sequence)[:, -1:, :]
-                predicted_steps.append(next_step_prediction.cpu())
-                current_sequence = torch.cat([current_sequence[:, 1:, :], next_step_prediction], dim=1)
-            return torch.cat(predicted_steps, dim=1).squeeze(0)
+                # The forward pass takes raw prices and outputs predicted returns
+                predicted_returns = self.forward(current_sequence_raw)
+                
+                # We only care about the return for the very last time step
+                last_step_return = predicted_returns[:, -1:, :]
+                
+                # Get the last known price to un-normalize
+                last_known_price = current_sequence_raw[:, -1:, :]
+                
+                # Calculate the next predicted price
+                next_price_pred = last_known_price * last_step_return
+                
+                predicted_prices_list.append(next_price_pred.cpu())
+                
+                # Update the input sequence with the new raw price prediction
+                current_sequence_raw = torch.cat([current_sequence_raw[:, 1:, :], next_price_pred], dim=1)
+            
+            return torch.cat(predicted_prices_list, dim=1).squeeze(0)

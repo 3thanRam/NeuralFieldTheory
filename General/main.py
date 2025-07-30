@@ -13,9 +13,9 @@ from tasks.testing import test_model
 TASK_CONFIG = {
     "project_directory":  os.path.dirname(__file__),
     "tokenizer_directory":os.path.join( os.path.dirname(__file__),"model_data", "chatbot_tokenizer"),
-    "task": "stockbot",  # 'stockbot' or 'chatbot'
-    "mode": "train",     # 'train' or 'test'
-    "load_checkpoint": False,
+    "task": "chatbot",  # 'stockbot' or 'chatbot'
+    "mode": "test",     # 'train' or 'test'
+    "load_checkpoint": True,
     "start_epoch": 0,
     "best_val_loss": torch.inf,
     "epochs": 100,
@@ -23,33 +23,35 @@ TASK_CONFIG = {
 
     # --- Core Model Hyperparameters ---
     "core_model_class": "LNN",
-    "reversible": True,          # True for Gauss-Seidel, False for Jacobi update
+    "reversible": False,          # True for Gauss-Seidel, False for Jacobi update
     "parallel_force": True,       # True for fast Conv1d, False for slow autograd
-    "embed_dim": 128,    # Must be even if reversible=True
-    "kernel_size": 5,  # Standard 3: 1 left, 1 right. 5 or 7 for a wider view...
-    "d_hidden_dim": 256,
-    "num_blocks": 20,
+    "embed_dim": 256,    # Must be even if reversible=True
+    "kernel_size": 3,  # Standard 3: 1 left, 1 right. 5 or 7 for a wider view...
+    "d_hidden_dim": 512,
+    "num_blocks": 2,
+    "num_heads":10,
     "dropout": 0.1,
-    "dt": 0.1,
+    "dt": 0.05,
     "lr": 1e-3,
     "batch_size": 32,
     "val_split_ratio":0.1,
     
     
     # --- Data & Task Type Flags ---
-    "use_tokenization": False,
-    "use_normalization": True,
+    "use_tokenization": True,
+    "use_normalization": False,
+    "normalization_type": "returns",  # Options: "last_point" or "sequence" or "relative" or "returns"
 
-    "test_type": "stockbot", #chatbot,completetext,stockbot
+    "test_type": "chatbot", #chatbot,completetext,stockbot
     
     
 
     # Stockbot specific params
-    "symbols":   ["GLD", "AAPL", "TSLA", "SPY", "TLT","NVDA","AMZN","MSFT","GOOGL","META"],#"AVGO","BRK.B","TSM","JPM","WMT","LLY","ORCL","V","MA","NFLX"],
+    "symbols":   ["GLD", "AAPL", "TSLA", "SPY", "TLT","NVDA","AMZN","MSFT","GOOGL","META","AVGO","BRK.B","TSM","JPM","WMT","LLY","ORCL","V","MA","NFLX"],
     "primary_symbol": "GLD",
     "years_of_data": 7,
-    "sequence_length": 60,
-    "test_history_length": 40,   # How many past data points to show on the plot
+    "sequence_length": 80,
+    "test_history_length": 60,   # How many past data points to show on the plot
     "test_prediction_length": 20, # How many future data points to predict and plotc
     
     # Chatbot specific params
@@ -59,15 +61,16 @@ TASK_CONFIG = {
     # --- Loss Weights ---
     "loss_config": {
         # The base loss should always have a weight of 1.0
-        "stockbot_base": 1.0,
-        "chatbot_base": 0., 
+        "stockbot_base": 0.,
+        "chatbot_base": 1.0, 
         
         # Auxiliary losses can be added, removed, or have their weights changed
-        "norm_constraint": 1.,
-        "force_minimization": 1.,
-        "force_decorrelation": 1.,
-        "round_trip": 1.,
-        "energy_ratio": 1.
+        "norm_constraint": 100., # chatbot 0.01 stockbot 100
+        "force_minimization": 500.,# chatbot 10 stockbot 500
+        "force_decorrelation": 500.,# chatbot 10 stockbot 500
+        "round_trip": 500.,# chatbot 10 stockbot 500
+        "energy_ratio": 500.,# chatbot 20 stockbot 500
+        "candle_shape": 0.# chatbot 0 stockbot 500
     },
 }
 TASK_CONFIG["num_input_features"]=len(TASK_CONFIG["symbols"]) * 5,

@@ -1,7 +1,7 @@
 # models/lnn.py
 import torch
 import torch.nn as nn
-from common.modules.base_modules import PositionalEncoding, LearnableFrFT, ParallelForceBlock
+from common.modules.base_modules import PositionalEncoding, LearnableFrFT, ParallelForceBlock,MultiHeadForceBlock
 
 # --- This is the missing PotentialBlock class ---
 class PotentialBlock(nn.Module):
@@ -47,11 +47,11 @@ class LNN(nn.Module):
 
         # --- Dynamically Build Force Blocks ---
         kernel_size = kwargs.get('kernel_size', 3) 
-
+        num_heads = kwargs.get('num_heads', 3) 
         # --- Dynamically Build Force Blocks ---
         if self.parallel_force:
             # Pass kernel_size to the constructor
-            ForceBlock = lambda dim, d_hidden_dim: ParallelForceBlock(dim, d_hidden_dim, kernel_size=kernel_size)
+            ForceBlock = lambda dim, d_hidden_dim: MultiHeadForceBlock(num_heads,dim, d_hidden_dim, kernel_size=kernel_size,dropout_rate=kwargs.get('dropout', 0.1))
         else:
             ForceBlock = lambda dim, d_hidden_dim: PotentialBlock(dim, d_hidden_dim)
         
@@ -72,20 +72,43 @@ class LNN(nn.Module):
             return block.get_force(q) # We need to call its .get_force() method
 
     def _forward_reversible(self, Q, Q_dot, return_internals):
-        q1, q2 = torch.chunk(Q, 2, dim=-1); q_dot1, q_dot2 = torch.chunk(Q_dot, 2, dim=-1)
+        q1, q2 = torch.chunk(Q, 2, dim=-1)
+        q_dot1, q_dot2 = torch.chunk(Q_dot, 2, dim=-1)
+        
         internals = {'forces_f': [], 'forces_g': [], 'round_trip_loss': []}
-        for f_block, g_block in zip(self.F_blocks, self.G_blocks):
-            accel_f = self._get_force(f_block, q2)
-            q_dot1_half = q_dot1 + 0.5 * accel_f * self.dt
-            q1 = q1 + q_dot1_half * self.dt
 
-            accel_g = self._get_force(g_block, q1)
-            q_dot1 = q_dot1_half + 0.5 * accel_f * self.dt  
-            q_dot2 = q_dot2 + accel_g * self.dt
-            q2 = q2 + q_dot2 * self.dt
+        for f_block, g_block in zip(self.F_blocks, self.G_blocks):
+           
+            accel_f = self._get_force(f_block, q2)
+            # Update position q1
+            q1_new = q1 + q_dot1 * self.dt + 0.5 * accel_f * (self.dt ** 2)
+
+            accel_f = self._get_force(f_block, q2)
+            q_dot1_update = accel_f * self.dt
+            q1_update = q_dot1_update * self.dt
+            
+            # Additive update
+            q1_new = q1 + q1_update
+            q_dot1_new = q_dot1 + q_dot1_update
+
+            # --- Second half of the RevNet update (G) ---
+            accel_g = self._get_force(g_block, q1_new)
+            q_dot2_update = accel_g * self.dt
+            q2_update = q_dot2_update * self.dt
+            
+            # Additive update
+            q2_new = q2 + q2_update
+            q_dot2_new = q_dot2 + q_dot2_update
+
+            # Update state for the next loop
+            q1, q2, q_dot1, q_dot2 = q1_new, q2_new, q_dot1_new, q_dot2_new
+
             if return_internals:
-                internals['forces_f'].append(accel_f); internals['forces_g'].append(accel_g)
+                internals['forces_f'].append(accel_f)
+                internals['forces_g'].append(accel_g)
+                # Round trip loss is not well-defined here
                 internals['round_trip_loss'].append(torch.tensor(0.))
+
         Q_final, Q_dot_final = torch.cat([q1, q2], -1), torch.cat([q_dot1, q_dot2], -1)
         return Q_final, Q_dot_final, internals
 

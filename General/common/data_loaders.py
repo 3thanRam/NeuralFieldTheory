@@ -110,9 +110,11 @@ def _get_stock_data(symbols, start_date, end_date):
 def prepare_stock_loaders(config):
     """
     Prepares data loaders for the stock prediction task.
+    - Input X data is kept as RAW prices.
+    - Target Y data is converted to NORMALIZED returns (P_t / P_{t-1}).
     """
     if not ALPACA_AVAILABLE:
-        raise RuntimeError("Cannot prepare stock data. `alpaca-py` is not installed or API keys are not set.")
+        raise RuntimeError("Cannot prepare stock data. `alpaca-py` not installed or keys not set.")
         
     print(f"Fetching {config.years_of_data} years of data for {config.symbols}...")
     end_date = datetime.now() - timedelta(days=1)
@@ -122,28 +124,43 @@ def prepare_stock_loaders(config):
     if not all_data or not all_data[config.primary_symbol]:
         raise RuntimeError("API fetch failed for the primary symbol.")
         
-    dates_per_symbol = {symbol: {bar[0] for bar in data} for symbol, data in all_data.items()}
+    dates_per_symbol = {s: {bar[0] for bar in data} for s, data in all_data.items()}
     common_dates = sorted(list(set.intersection(*dates_per_symbol.values())))
     print(f"Found {len(common_dates)} common trading days.")
     
-    data_by_date = {symbol: {bar[0]: bar[1:] for bar in data} for symbol, data in all_data.items()}
-    aligned_data = {symbol: np.array([data_by_date[symbol][date] for date in common_dates], dtype=np.float32) for symbol in config.symbols}
+    data_by_date = {s: {bar[0]: bar[1:] for bar in data} for s, data in all_data.items()}
+    aligned_data = {s: np.array([data_by_date[s][date] for date in common_dates], dtype=np.float32) for s in config.symbols}
     
-    all_features = np.concatenate([aligned_data[symbol] for symbol in config.symbols], axis=1)
+    all_features = np.concatenate([aligned_data[s] for s in config.symbols], axis=1)
     
-    all_X = []
+    # Create windows of raw price data
+    all_X_raw = []
     for i in range(len(common_dates) - config.sequence_length):
-        all_X.append(all_features[i: i + config.sequence_length])
-        
-    all_X = np.array(all_X, dtype=np.float32)
-    all_Y = all_X.copy()
+        all_X_raw.append(all_features[i : i + config.sequence_length])
+    all_X_raw = np.array(all_X_raw, dtype=np.float32)
+    all_Y_raw = all_X_raw.copy()
+
+    # --- Convert Y targets to a return series ---
+    # Get the previous day's prices for every sequence in Y
+    # Shape: [num_samples, seq_len, features]
+    prev_Y_raw = np.concatenate([
+        all_Y_raw[:, 0:1, :], # Prepend the first value as the reference for the first step
+        all_Y_raw[:, :-1, :]
+    ], axis=1)
     
-    indices = np.arange(len(all_X))
+    eps = 1e-8
+    # The target is now the return R_t = P_t / P_{t-1}
+    all_Y_norm = all_Y_raw / (prev_Y_raw + eps)
+
+    # Split into training and validation sets
+    indices = np.arange(len(all_X_raw))
     np.random.shuffle(indices)
     split_idx = int(len(indices) * (1 - config.val_split_ratio))
+    train_indices, val_indices = indices[:split_idx], indices[split_idx:]
     
-    train_loader = DataLoader(TensorDataset(torch.from_numpy(all_X[indices[:split_idx]]), torch.from_numpy(all_Y[indices[:split_idx]])), batch_size=config.batch_size, shuffle=True)
-    val_loader = DataLoader(TensorDataset(torch.from_numpy(all_X[indices[split_idx:]]), torch.from_numpy(all_Y[indices[split_idx:]])), batch_size=config.batch_size)
+    # The DataLoader gets RAW X and NORMALIZED Y
+    train_loader = DataLoader(TensorDataset(torch.from_numpy(all_X_raw[train_indices]), torch.from_numpy(all_Y_norm[train_indices])), batch_size=config.batch_size, shuffle=True)
+    val_loader = DataLoader(TensorDataset(torch.from_numpy(all_X_raw[val_indices]), torch.from_numpy(all_Y_norm[val_indices])), batch_size=config.batch_size)
     
-    print(f"Data prepared (RAW values): {len(train_loader)} train batches, {len(val_loader)} val batches.")
+    print(f"Data prepared: Input X is RAW, Target Y is NORMALIZED RETURNS.")
     return train_loader, val_loader
