@@ -1,14 +1,15 @@
 import os
 import torch
-from training import train_model,train_ebm_model
+from training import train_ebm_model
 from data_utils import setup_data
-from tasks import load_model_for_inference,test_model,manual_test_chat
+import multiprocessing as mp
+
 from LNFT import LNFT_EBM
 
 
 if __name__ == "__main__":
     config = {
-        "mode":"train",
+        "mode":"test",
         # Model
         "embed_dim": 64,         # D
         "d_ff": 128,             # MLP hidden dim
@@ -22,21 +23,25 @@ if __name__ == "__main__":
         # Training
         "num_epochs": 10,
         "batch_size": 16,        # Keep this small
-        "learning_rate": 1e-3,
-        
+        "learning_rate": 1e-5,
+        "weight_decay":0.01,
+
         # HMC Generation (for training contrastive loss)
         "hmc_steps": 5,
         "pcd_hmc_steps": 1, # Using 1-step PCD is very common and efficient
         "hmc_step_size": 1e-2,
         
         # System
-        "save_path": "lnft_ebm_final.pth"
+        "save_path": os.path.join( os.path.dirname(__file__),"lnft_ebm_final.pth"),
+        "plt_save_path":os.path.join( os.path.dirname(__file__),"trainingloss.pdf"),
+        "plt_update_interval":15,
     }
 
     # 1. Setup Data
     train_loader, tokenizer = setup_data(config)
 
     if config["mode"]=="train":
+        mp.set_start_method('spawn', force=True)
         # 2. Train the EBM
         train_ebm_model(config, train_loader)
 
