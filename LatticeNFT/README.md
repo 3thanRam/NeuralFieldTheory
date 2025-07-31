@@ -5,7 +5,7 @@ A Physics-Inspired Architecture for Generative AI
 
 This repository contains the official implementation of the Lattice Neural Field Theory (LNFT) model, a novel deep learning architecture inspired by principles from Lattice Quantum Chromodynamics (LQCD). This project explores the use of gauge-covariant interactions and energy-based modeling as an alternative to standard Transformer architectures for generative tasks.
 
-The core of this work is an Energy-Based Model (EBM) that learns a complex energy landscape over sequences of data. Generation is performed via Hamiltonian Monte Carlo (HMC), treating text or other data sequences as states in a physical system to be evolved toward low-energy (high-coherence) configurations.
+The core of this work is an Energy-Based Model (EBM) that learns a complex energy landscape over sequences of data. Generation is performed via Langevin Dynamics, treating text or other data sequences as states in a physical system to be evolved toward low-energy (high-coherence) configurations.
 
 .
 ├── main.py             # Main script to run training and generation
