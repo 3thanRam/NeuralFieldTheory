@@ -68,3 +68,42 @@ class Normalize(nn.Module):
     def inverse(self, x_norm, stats):
         mean, std = stats
         return x_norm * (std + self.eps) + mean
+
+class PhaseSpaceTransform(nn.Module):
+    def __init__(self, embed_dim, dt=0.1):
+        super().__init__()
+        self.dt = dt
+        # This would be your actual LearnableFrFT module
+        self.frft = LearnableFrFT(embed_dim) 
+        # For this example, let's make a simple learnable combination
+        self.proj_q = nn.Linear(embed_dim, embed_dim)
+        self.proj_q_dot = nn.Linear(embed_dim, embed_dim)
+        self.inv_proj_q= nn.Linear(embed_dim, embed_dim)
+
+    def forward(self, q):
+        """
+        Takes a single tensor 'q' and returns a single transformed tensor.
+        """
+        # 1. Calculate q_dot internally
+        q_dot = torch.zeros_like(q)
+        q_dot[:, 1:] = (q[:, 1:] - q[:, :-1]) / self.dt
+        
+        # 2. Apply the transform (e.g., your FrFT) internally
+        q, q_dot = self.frft(q, q_dot) 
+        
+        # 3. Combine the transformed parts into a single output tensor.
+        # A simple linear combination is a good, learnable way to do this.
+        q_transformed = self.proj_q(q) + self.proj_q_dot(q_dot)
+        
+        return q_transformed
+
+    def inverse(self, q_transformed):
+        """
+        A placeholder for the inverse transform. In a real FrFT, this would be
+        calling the inverse FrFT. For our simple linear combination,
+        an exact inverse isn't possible, but another linear layer is a
+        common way to approximate the return to the original space.
+        """
+        # This is a conceptual inverse, not a mathematical one.
+        q_final = self.inv_proj_q(q_transformed) 
+        return q_final
